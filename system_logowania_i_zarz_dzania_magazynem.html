@@ -1,0 +1,2534 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MagazynPro - System Skanowania i Zarządzania Magazynem</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- JsBarcode CDN for rendering barcodes -->
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+    <!-- HTML5 QR / Barcode Reader -->
+    <script src="https://unpkg.com/html5-qrcode"></script>
+
+    <!-- Cloud Real-time Synchronization Module -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            apiKey: "demo-key",
+            authDomain: "demo.firebaseapp.com",
+            projectId: "demo-project"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        window.fb = {
+            auth, db,
+            signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            doc, setDoc, deleteDoc, onSnapshot, collection,
+            appId: typeof __app_id !== 'undefined' ? __app_id : 'magazyn-pro-default',
+            initialToken: typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null
+        };
+    </script>
+
+    <!-- Google Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f1f5f9;
+        }
+        @media print {
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            body { background: white; color: black; }
+        }
+        .print-only { display: none; }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #e2e8f0;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #94a3b8;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+    </style>
+</head>
+<body class="text-slate-800 antialiased min-h-screen flex flex-col">
+    <div id="root" class="min-h-screen flex flex-col"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // Sygnały dźwiękowe informujące o sukcesie lub błędzie skanu
+        const playAudioBeep = (type = 'success') => {
+            try {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (!AudioCtx) return;
+                const ctx = new AudioCtx();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+
+                if (type === 'success') {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+                    osc.frequency.setValueAtTime(880, ctx.currentTime + 0.1);
+                    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+                    osc.start(ctx.currentTime);
+                    osc.stop(ctx.currentTime + 0.3);
+                } else if (type === 'error') {
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(220, ctx.currentTime);
+                    osc.frequency.setValueAtTime(160, ctx.currentTime + 0.15);
+                    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+                    osc.start(ctx.currentTime);
+                    osc.stop(ctx.currentTime + 0.4);
+                } else {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(440, ctx.currentTime);
+                    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.05);
+                    osc.start(ctx.currentTime);
+                    osc.stop(ctx.currentTime + 0.05);
+                }
+            } catch (e) {
+                console.log("Audio feedback disabled", e);
+            }
+        };
+
+        // Komponent renderujący kody kreskowe CODE128
+        function BarcodeVisual({ value, width = 1.8, height = 40, fontSize = 11 }) {
+            const svgRef = useRef(null);
+
+            useEffect(() => {
+                if (svgRef.current && value && window.JsBarcode) {
+                    try {
+                        window.JsBarcode(svgRef.current, value, {
+                            format: "CODE128",
+                            width: width,
+                            height: height,
+                            displayValue: true,
+                            fontSize: fontSize,
+                            margin: 5,
+                            background: "#ffffff",
+                            lineColor: "#000000"
+                        });
+                    } catch (err) {
+                        console.error("Barcode render error:", err);
+                    }
+                }
+            }, [value, width, height, fontSize]);
+
+            return <svg ref={svgRef} className="mx-auto max-w-full"></svg>;
+        }
+
+        // Przykładowe dane startowe magazynu i zleceń
+        const INITIAL_PRODUCTS = [
+            { id: '1', name: 'Wkręty do drewna 4x50mm (100 szt.)', ean: '5901234567890', category: 'Elementy Złączne', price: 18.50, stock: 45, minStock: 10, unit: 'opk' },
+            { id: '2', name: 'Profil Aluminiowy U 20x20 2m', ean: '5909876543210', category: 'Profile & Konstrukcje', price: 42.00, stock: 12, minStock: 5, unit: 'szt' },
+            { id: '3', name: 'Klej Montażowy Strong 310ml', ean: '5905555444333', category: 'Chemia Budowlana', price: 29.90, stock: 3, minStock: 8, unit: 'szt' },
+            { id: '4', name: 'Taśma Malarska Papierowa 48mm/50m', ean: '5901111222333', category: 'Taśmy & Pakowanie', price: 12.00, stock: 80, minStock: 20, unit: 'szt' },
+            { id: '5', name: 'Rękawice Robocze Powlekane L', ean: '5907777888999', category: 'BHP', price: 6.50, stock: 150, minStock: 30, unit: 'szt' }
+        ];
+
+        const INITIAL_ORDERS = [
+            { id: 'ZLEC-2026-001', name: 'Budowa Hal Alfa', client: 'Bud-Mex Sp. z o.o.', status: 'ACTIVE' },
+            { id: 'ZLEC-2026-002', name: 'Remont Biura Centralnego', client: 'Omega Logistics', status: 'ACTIVE' },
+            { id: 'ZLEC-2026-003', name: 'Montaż Elewacji Budynek B', client: 'Kowalski Construction', status: 'COMPLETED' }
+        ];
+
+        const INITIAL_ASSIGNMENTS = [
+            { id: 'asg-1', orderCode: 'ZLEC-2026-001', ean: '5901234567890', productName: 'Wkręty do drewna 4x50mm (100 szt.)', quantity: 5, unit: 'opk', price: 18.50, timestamp: '2026-11-24 10:15:30', worker: 'Skaner Magazynier' },
+            { id: 'asg-2', orderCode: 'ZLEC-2026-001', ean: '5909876543210', productName: 'Profil Aluminiowy U 20x20 2m', quantity: 2, unit: 'szt', price: 42.00, timestamp: '2026-11-24 10:18:05', worker: 'Skaner Magazynier' }
+        ];
+
+        function App() {
+            // Blokada wejścia na stronę po otwarciu nowej sesji
+            const [isAppUnlocked, setIsAppUnlocked] = useState(() => {
+                return sessionStorage.getItem('magazyn_unlocked') === 'true';
+            });
+            const [accessPinInput, setAccessPinInput] = useState('');
+            const [accessPinError, setAccessPinError] = useState('');
+
+            // Role i niezależne kody PIN (do wejścia na stronę oraz do panelu szefa)
+            const [role, setRole] = useState('worker'); // 'worker' | 'boss'
+            const [appPin, setAppPin] = useState(() => localStorage.getItem('magazyn_app_pin') || '1234');
+            const [bossPin, setBossPin] = useState(() => localStorage.getItem('magazyn_boss_pin') || '4321');
+            const [isBossAuthenticated, setIsBossAuthenticated] = useState(false);
+            const [showPinModal, setShowPinModal] = useState(false);
+            const [pinInput, setPinInput] = useState('');
+            const [pinError, setPinError] = useState('');
+
+            // Stan synchronizacji z chmurą
+            const [user, setUser] = useState(null);
+            const [cloudSynced, setCloudSynced] = useState(false);
+
+            // Główne dane aplikacji
+            const [products, setProducts] = useState(() => {
+                const saved = localStorage.getItem('magazyn_products');
+                return saved ? JSON.parse(saved) : INITIAL_PRODUCTS;
+            });
+            const [orders, setOrders] = useState(() => {
+                const saved = localStorage.getItem('magazyn_orders');
+                return saved ? JSON.parse(saved) : INITIAL_ORDERS;
+            });
+            const [assignments, setAssignments] = useState(() => {
+                const saved = localStorage.getItem('magazyn_assignments');
+                return saved ? JSON.parse(saved) : INITIAL_ASSIGNMENTS;
+            });
+
+            // Stan interfejsu skanera pracownika
+            const [workerStep, setWorkerStep] = useState(1); // 1 = Wybór zlecenia, 2 = Skanowanie produktów
+            const [orderInputText, setOrderInputText] = useState('');
+            const [activeOrderCode, setActiveOrderCode] = useState('');
+            const [productBarcodeInput, setProductBarcodeInput] = useState('');
+            const [matchedProduct, setMatchedProduct] = useState(null);
+            const [assignQty, setAssignQty] = useState(1);
+            const [bigSuccessBanner, setBigSuccessBanner] = useState(null);
+            const [inactivityTimer, setInactivityTimer] = useState(60);
+            const [showTestBarcodesWorker, setShowTestBarcodesWorker] = useState(false);
+
+            // Skaner z aparatu
+            const [isCameraActive, setIsCameraActive] = useState(false);
+            const [cameraScanMode, setCameraScanMode] = useState('order'); // 'order' | 'product'
+
+            // Referencje do automatycznego ustawiania kursora dla czytników kodów
+            const orderInputRef = useRef(null);
+            const productInputRef = useRef(null);
+
+            // Stan interfejsu panelu szefa
+            const [bossTab, setBossTab] = useState('inventory'); // 'inventory' | 'orders' | 'barcodes' | 'settings'
+            const [searchTerm, setSearchTerm] = useState('');
+            const [categoryFilter, setCategoryFilter] = useState('ALL');
+            const [showLowStockOnly, setShowLowStockOnly] = useState(false);
+            const [historyOrderFilter, setHistoryOrderFilter] = useState('ALL');
+            const [bossOrderStatusFilter, setBossOrderStatusFilter] = useState('ALL'); // 'ALL' | 'ACTIVE' | 'COMPLETED'
+
+            // Podgląd szczegółów konkretnego zlecenia
+            const [inspectingOrder, setInspectingOrder] = useState(null);
+            const [inspectSearch, setInspectSearch] = useState('');
+
+            // Modale i formularze
+            const [showProductModal, setShowProductModal] = useState(false);
+            const [editingProduct, setEditingProduct] = useState(null);
+            const [formData, setFormData] = useState({
+                name: '', ean: '', category: 'Ogólne', price: 0, stock: 10, minStock: 5, unit: 'szt'
+            });
+
+            const [showNewOrderModal, setShowNewOrderModal] = useState(false);
+            const [newOrderData, setNewOrderData] = useState({ id: '', name: '', client: '' });
+
+            const [showChangePinModal, setShowChangePinModal] = useState(false);
+            const [pinTypeToEdit, setPinTypeToEdit] = useState('boss'); // 'app' | 'boss'
+            const [pinForm, setPinForm] = useState({ oldPin: '', newPin: '', confirmPin: '' });
+            const [changePinError, setChangePinError] = useState('');
+
+            const [deleteConfirmTarget, setDeleteConfirmTarget] = useState(null);
+            const [deleteScanConfirmTarget, setDeleteScanConfirmTarget] = useState(null);
+            const [resetDataConfirm, setResetDataConfirm] = useState(false);
+
+            // Powiadomienia typu toast
+            const [toast, setToast] = useState(null);
+
+            // Logowanie do aplikacji przy otwarciu strony
+            const handleAccessPinSubmit = (e) => {
+                e.preventDefault();
+                if (accessPinInput === appPin) {
+                    setIsAppUnlocked(true);
+                    sessionStorage.setItem('magazyn_unlocked', 'true');
+                    setAccessPinError('');
+                    setAccessPinInput('');
+                    playAudioBeep('success');
+                } else {
+                    setAccessPinError('Nieprawidłowy PIN dostępu do strony!');
+                    playAudioBeep('error');
+                }
+            };
+
+            // Wyświetlanie powiadomienia
+            const showNotification = (message, type = 'success') => {
+                const id = Date.now();
+                setToast({ message, type, id });
+                playAudioBeep(type);
+                setTimeout(() => {
+                    setToast(prev => (prev && prev.id === id ? null : prev));
+                }, 4000);
+            };
+
+            // Przełączanie trybu pracy (Pracownik / Szef)
+            const handleRoleSwitch = (targetRole) => {
+                if (targetRole === 'boss' && !isBossAuthenticated) {
+                    setPinInput('');
+                    setPinError('');
+                    setShowPinModal(true);
+                } else {
+                    setRole(targetRole);
+                    playAudioBeep('click');
+                }
+            };
+
+            // Zapis lokalny w pamięci przeglądarki
+            useEffect(() => {
+                localStorage.setItem('magazyn_products', JSON.stringify(products));
+            }, [products]);
+
+            useEffect(() => {
+                localStorage.setItem('magazyn_orders', JSON.stringify(orders));
+            }, [orders]);
+
+            useEffect(() => {
+                localStorage.setItem('magazyn_assignments', JSON.stringify(assignments));
+            }, [assignments]);
+
+            useEffect(() => {
+                localStorage.setItem('magazyn_app_pin', appPin);
+            }, [appPin]);
+
+            useEffect(() => {
+                localStorage.setItem('magazyn_boss_pin', bossPin);
+            }, [bossPin]);
+
+            // Autoryzacja chmury
+            useEffect(() => {
+                const fb = window.fb;
+                if (!fb) return;
+
+                const initAuth = async () => {
+                    try {
+                        if (fb.initialToken) {
+                            await fb.signInWithCustomToken(fb.auth, fb.initialToken);
+                        } else {
+                            await fb.signInAnonymously(fb.auth);
+                        }
+                    } catch (err) {
+                        console.warn("Cloud Auth Notice:", err);
+                    }
+                };
+
+                initAuth();
+
+                const unsubscribeAuth = fb.onAuthStateChanged(fb.auth, (currentUser) => {
+                    setUser(currentUser);
+                });
+
+                return () => unsubscribeAuth();
+            }, []);
+
+            // Nasłuchiwanie zmian w czasie rzeczywistym
+            useEffect(() => {
+                const fb = window.fb;
+                if (!fb || !user) return;
+
+                const appId = fb.appId;
+                const basePath = ['artifacts', appId, 'public', 'data'];
+
+                try {
+                    const productsColRef = fb.collection(fb.db, ...basePath, 'products');
+                    const unsubProducts = fb.onSnapshot(productsColRef, (snapshot) => {
+                        if (!snapshot.empty) {
+                            const items = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                            setProducts(items);
+                        }
+                        setCloudSynced(true);
+                    }, (err) => console.warn("Products sync notice:", err));
+
+                    const ordersColRef = fb.collection(fb.db, ...basePath, 'orders');
+                    const unsubOrders = fb.onSnapshot(ordersColRef, (snapshot) => {
+                        if (!snapshot.empty) {
+                            const items = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                            setOrders(items);
+                        }
+                    }, (err) => console.warn("Orders sync notice:", err));
+
+                    const assignmentsColRef = fb.collection(fb.db, ...basePath, 'assignments');
+                    const unsubAssignments = fb.onSnapshot(assignmentsColRef, (snapshot) => {
+                        if (!snapshot.empty) {
+                            const items = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                            items.sort((a, b) => b.id.localeCompare(a.id));
+                            setAssignments(items);
+                        }
+                    }, (err) => console.warn("Assignments sync notice:", err));
+
+                    const configDocRef = fb.doc(fb.db, ...basePath, 'settings', 'config');
+                    const unsubConfig = fb.onSnapshot(configDocRef, (snapshot) => {
+                        if (snapshot.exists()) {
+                            const data = snapshot.data();
+                            if (data.appPin) setAppPin(data.appPin);
+                            if (data.bossPin) setBossPin(data.bossPin);
+                        }
+                    }, (err) => console.warn("Config sync notice:", err));
+
+                    return () => {
+                        unsubProducts();
+                        unsubOrders();
+                        unsubAssignments();
+                        unsubConfig();
+                    };
+                } catch (e) {
+                    console.warn("Firebase live listener notice:", e);
+                }
+            }, [user]);
+
+            // Automatyczny powrót do wyboru zlecenia po 60 sekundach bezczynności
+            useEffect(() => {
+                let timerInterval = null;
+                if (role === 'worker' && workerStep === 2) {
+                    setInactivityTimer(60);
+                    timerInterval = setInterval(() => {
+                        setInactivityTimer(prev => {
+                            if (prev <= 1) {
+                                setWorkerStep(1);
+                                setActiveOrderCode('');
+                                setProductBarcodeInput('');
+                                setMatchedProduct(null);
+                                showNotification('Reset z powodu braku aktywności (1 min). Wybierz zlecenie od nowa.', 'error');
+                                return 60;
+                            }
+                            return prev - 1;
+                        });
+                    }, 1000);
+                }
+
+                const resetInactivity = () => {
+                    if (role === 'worker' && workerStep === 2) {
+                        setInactivityTimer(60);
+                    }
+                };
+
+                window.addEventListener('mousemove', resetInactivity);
+                window.addEventListener('keydown', resetInactivity);
+                window.addEventListener('touchstart', resetInactivity);
+                window.addEventListener('click', resetInactivity);
+
+                return () => {
+                    if (timerInterval) clearInterval(timerInterval);
+                    window.removeEventListener('mousemove', resetInactivity);
+                    window.removeEventListener('keydown', resetInactivity);
+                    window.removeEventListener('touchstart', resetInactivity);
+                    window.removeEventListener('click', resetInactivity);
+                };
+            }, [role, workerStep]);
+
+            // Automatyczne ustawianie kursora na polu skanowania
+            useEffect(() => {
+                if (role === 'worker' && isAppUnlocked) {
+                    if (workerStep === 1 && orderInputRef.current) {
+                        orderInputRef.current.focus();
+                    } else if (workerStep === 2 && productInputRef.current) {
+                        productInputRef.current.focus();
+                    }
+                }
+            }, [role, workerStep, matchedProduct, isAppUnlocked]);
+
+            // Wybór aktywnego zlecenia przez pracownika
+            const handleSelectOrder = (orderCode) => {
+                const cleaned = orderCode.trim().toUpperCase();
+                if (!cleaned) {
+                    showNotification('Wpisz lub zeskanuj kod zlecenia!', 'error');
+                    return;
+                }
+                const existing = orders.find(o => o.id.toUpperCase() === cleaned);
+                if (!existing) {
+                    showNotification(`BŁĄD: Zlecenie "${cleaned}" nie istnieje w systemie! Poproś szefa o jego utworzenie.`, 'error');
+                    return;
+                }
+                if (existing.status === 'COMPLETED') {
+                    showNotification(`BŁĄD: Zlecenie "${existing.id}" jest ZAKOŃCZONE!`, 'error');
+                    return;
+                }
+                setActiveOrderCode(existing.id);
+                setWorkerStep(2);
+                setProductBarcodeInput('');
+                setMatchedProduct(null);
+                setOrderInputText('');
+                showNotification(`Aktywne Zlecenie: ${existing.id} (${existing.name})`, 'success');
+            };
+
+            // Dopasowanie produktu po kodzie EAN
+            useEffect(() => {
+                const cleanedEan = productBarcodeInput.trim();
+                if (cleanedEan.length > 0) {
+                    const found = products.find(p => p.ean === cleanedEan);
+                    if (found) {
+                        setMatchedProduct(found);
+                        setAssignQty(1);
+                    } else {
+                        setMatchedProduct(null);
+                    }
+                } else {
+                    setMatchedProduct(null);
+                }
+            }, [productBarcodeInput, products]);
+
+            // Przypisanie zeskanowanego produktu do zlecenia
+            const handleConfirmAssignment = (e) => {
+                if (e) e.preventDefault();
+                if (!matchedProduct) {
+                    showNotification('Nie znaleziono produktu o tym kodzie EAN!', 'error');
+                    return;
+                }
+
+                if (!activeOrderCode) {
+                    showNotification('Najpierw wybierz aktywne zlecenie!', 'error');
+                    setWorkerStep(1);
+                    return;
+                }
+
+                if (assignQty <= 0) {
+                    showNotification('Ilość musi być większa niż 0!', 'error');
+                    return;
+                }
+
+                if (matchedProduct.stock < assignQty) {
+                    showNotification(`Brak wystarczającej ilości w magazynie! Stan: ${matchedProduct.stock} ${matchedProduct.unit}`, 'error');
+                    return;
+                }
+
+                const updatedStock = matchedProduct.stock - Number(assignQty);
+                const newAssignment = {
+                    id: 'asg-' + Date.now(),
+                    orderCode: activeOrderCode,
+                    ean: matchedProduct.ean,
+                    productName: matchedProduct.name,
+                    quantity: Number(assignQty),
+                    unit: matchedProduct.unit,
+                    price: matchedProduct.price,
+                    timestamp: new Date().toLocaleString('pl-PL'),
+                    worker: 'Skaner Magazynier'
+                };
+
+                setProducts(prevProducts => prevProducts.map(p => {
+                    if (p.id === matchedProduct.id) {
+                        return { ...p, stock: updatedStock };
+                    }
+                    return p;
+                }));
+                setAssignments(prev => [newAssignment, ...prev]);
+
+                const fb = window.fb;
+                if (fb && user) {
+                    const basePath = ['artifacts', fb.appId, 'public', 'data'];
+                    fb.setDoc(fb.doc(fb.db, ...basePath, 'products', matchedProduct.id), {
+                        ...matchedProduct,
+                        stock: updatedStock
+                    });
+                    fb.setDoc(fb.doc(fb.db, ...basePath, 'assignments', newAssignment.id), newAssignment);
+                }
+
+                playAudioBeep('success');
+                setBigSuccessBanner({
+                    productName: matchedProduct.name,
+                    qty: assignQty,
+                    unit: matchedProduct.unit,
+                    orderCode: activeOrderCode
+                });
+
+                setProductBarcodeInput('');
+                setMatchedProduct(null);
+                setAssignQty(1);
+                setInactivityTimer(60);
+
+                setTimeout(() => {
+                    setBigSuccessBanner(null);
+                }, 3500);
+
+                if (productInputRef.current) {
+                    productInputRef.current.focus();
+                }
+            };
+
+            // Cofnięcie skanu i zwrot towaru na stan przez szefa
+            const handleUndoAssignmentBoss = (assignmentId) => {
+                const target = assignments.find(a => a.id === assignmentId);
+                if (!target) return;
+
+                const targetProduct = products.find(p => p.ean === target.ean);
+                const restoredStock = targetProduct ? targetProduct.stock + target.quantity : 0;
+
+                setProducts(prevProducts => prevProducts.map(p => {
+                    if (p.ean === target.ean) {
+                        return { ...p, stock: restoredStock };
+                    }
+                    return p;
+                }));
+
+                setAssignments(prev => prev.filter(a => a.id !== assignmentId));
+
+                const fb = window.fb;
+                if (fb && user) {
+                    const basePath = ['artifacts', fb.appId, 'public', 'data'];
+                    if (targetProduct) {
+                        fb.setDoc(fb.doc(fb.db, ...basePath, 'products', targetProduct.id), {
+                            ...targetProduct,
+                            stock: restoredStock
+                        });
+                    }
+                    fb.deleteDoc(fb.doc(fb.db, ...basePath, 'assignments', assignmentId));
+                }
+
+                showNotification(`Cofnięto przypisanie ${target.quantity} ${target.unit} do ${target.orderCode}. Stan towaru przywrócony.`, 'success');
+            };
+
+            // Szybka korekta stanu +/-
+            const handleQuickStockAdjust = (productId, delta) => {
+                const target = products.find(p => p.id === productId);
+                if (!target) return;
+
+                const newStock = Math.max(0, target.stock + delta);
+                setProducts(prev => prev.map(p => p.id === productId ? { ...p, stock: newStock } : p));
+
+                const fb = window.fb;
+                if (fb && user) {
+                    fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'products', productId), {
+                        ...target,
+                        stock: newStock
+                    });
+                }
+                playAudioBeep('click');
+            };
+
+            // Zmiana statusu zlecenia (Aktywne / Zakończone)
+            const handleToggleOrderStatus = (orderId) => {
+                const target = orders.find(o => o.id === orderId);
+                if (!target) return;
+
+                const newStatus = target.status === 'COMPLETED' ? 'ACTIVE' : 'COMPLETED';
+
+                setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
+
+                const fb = window.fb;
+                if (fb && user) {
+                    fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders', orderId), {
+                        ...target,
+                        status: newStatus
+                    });
+                }
+
+                showNotification(`Zmieniono status zlecenia ${orderId} na: ${newStatus === 'ACTIVE' ? 'Aktywne' : 'Zakończone'}`, 'success');
+            };
+
+            // Zapis nowego lub edytowanego produktu
+            const handleSaveProduct = (e) => {
+                e.preventDefault();
+                if (!formData.name.trim() || !formData.ean.trim()) {
+                    showNotification('Nazwa i kod EAN są wymagane!', 'error');
+                    return;
+                }
+
+                const targetId = editingProduct ? editingProduct.id : String(Date.now());
+                const prodObj = { ...formData, id: targetId };
+
+                if (editingProduct) {
+                    setProducts(prev => prev.map(p => p.id === editingProduct.id ? prodObj : p));
+                    showNotification(`Zaktualizowano produkt: ${formData.name}`, 'success');
+                } else {
+                    if (products.some(p => p.ean === formData.ean)) {
+                        showNotification('Produkt z tym kodem EAN już istnieje!', 'error');
+                        return;
+                    }
+                    setProducts(prev => [prodObj, ...prev]);
+                    showNotification(`Dodano nowy produkt: ${formData.name}`, 'success');
+                }
+
+                const fb = window.fb;
+                if (fb && user) {
+                    fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'products', targetId), prodObj);
+                }
+
+                setShowProductModal(false);
+                setEditingProduct(null);
+            };
+
+            // Autoryzacja PIN-em do panelu szefa
+            const handlePinSubmit = (e) => {
+                e.preventDefault();
+                if (pinInput === bossPin) {
+                    setIsBossAuthenticated(true);
+                    setShowPinModal(false);
+                    setRole('boss');
+                    setPinError('');
+                    showNotification('Zalogowano pomyślnie do Panelu Szefa', 'success');
+                } else {
+                    setPinError('Nieprawidłowy PIN Szefa!');
+                    playAudioBeep('error');
+                }
+            };
+
+            // Dodawanie nowego zlecenia
+            const handleSaveNewOrder = (e) => {
+                e.preventDefault();
+                if (!newOrderData.id.trim() || !newOrderData.name.trim()) {
+                    showNotification('Kod i nazwa zlecenia są wymagane!', 'error');
+                    return;
+                }
+                const formattedId = newOrderData.id.toUpperCase().trim();
+                if (orders.some(o => o.id === formattedId)) {
+                    showNotification('Zlecenie o podanym kodzie już istnieje!', 'error');
+                    return;
+                }
+
+                const newOrderObj = { ...newOrderData, id: formattedId, status: 'ACTIVE' };
+                setOrders(prev => [...prev, newOrderObj]);
+
+                const fb = window.fb;
+                if (fb && user) {
+                    fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders', formattedId), newOrderObj);
+                }
+
+                setShowNewOrderModal(false);
+                setNewOrderData({ id: '', name: '', client: '' });
+                showNotification(`Utworzono nowe aktywne zlecenie ${formattedId}`, 'success');
+            };
+
+            // Zmiana kodu PIN
+            const handleChangePinSubmit = (e) => {
+                e.preventDefault();
+                const currentExpectedPin = pinTypeToEdit === 'app' ? appPin : bossPin;
+                
+                if (pinForm.oldPin !== currentExpectedPin) {
+                    setChangePinError('Obecny PIN jest nieprawidłowy!');
+                    return;
+                }
+                if (pinForm.newPin.length < 4) {
+                    setChangePinError('Nowy PIN musi mieć co najmniej 4 cyfry!');
+                    return;
+                }
+                if (pinForm.newPin !== pinForm.confirmPin) {
+                    setChangePinError('Nowy PIN i powtórzony PIN nie są zgodne!');
+                    return;
+                }
+
+                if (pinTypeToEdit === 'app') {
+                    setAppPin(pinForm.newPin);
+                } else {
+                    setBossPin(pinForm.newPin);
+                }
+
+                const fb = window.fb;
+                if (fb && user) {
+                    fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'settings', 'config'), {
+                        appPin: pinTypeToEdit === 'app' ? pinForm.newPin : appPin,
+                        bossPin: pinTypeToEdit === 'boss' ? pinForm.newPin : bossPin
+                    });
+                }
+
+                setShowChangePinModal(false);
+                setPinForm({ oldPin: '', newPin: '', confirmPin: '' });
+                setChangePinError('');
+                showNotification(`PIN ${pinTypeToEdit === 'app' ? 'Dostępu do Strony' : 'Panelu Szefa'} został zmieniony!`, 'success');
+            };
+
+            // Eksport stanu magazynowego do CSV
+            const exportInventoryCSV = () => {
+                let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
+                csvContent += "Kod EAN;Nazwa Produktu;Kategoria;Cena (PLN);Ilość na stanie;Jednostka;Próg alarmowy;Status\n";
+
+                products.forEach(p => {
+                    const status = p.stock <= p.minStock ? "NISKI STAN" : "OK";
+                    csvContent += `"${p.ean}";"${p.name}";"${p.category}";${p.price};${p.stock};"${p.unit}";${p.minStock};"${status}"\n`;
+                });
+
+                const encodedUri = encodeURI(csvContent);
+                const link = document.createElement("a");
+                link.setAttribute("href", encodedUri);
+                link.setAttribute("download", `Raport_Magazynowy_${new Date().toISOString().slice(0,10)}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                showNotification('Pobrano stan magazynowy do pliku CSV', 'success');
+            };
+
+            // Eksport historii skanów lub zlecenia do CSV
+            const exportOrderCSV = (orderCode = null) => {
+                let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
+                csvContent += "ID Operacji;Kod Zlecenia;Kod EAN;Nazwa Produktu;Przypisana Ilość;Jednostka;Cena Jedn.;Wartość;Data i Czas;Magazynier\n";
+
+                const listToExport = orderCode 
+                    ? assignments.filter(a => a.orderCode === orderCode)
+                    : assignments;
+
+                listToExport.forEach(a => {
+                    const totalVal = ((a.price || 0) * a.quantity).toFixed(2);
+                    csvContent += `"${a.id}";"${a.orderCode}";"${a.ean}";"${a.productName}";${a.quantity};"${a.unit}";${a.price || 0};${totalVal};"${a.timestamp}";"${a.worker}"\n`;
+                });
+
+                const encodedUri = encodeURI(csvContent);
+                const link = document.createElement("a");
+                link.setAttribute("href", encodedUri);
+                const filename = orderCode ? `Zlecenie_${orderCode}_${new Date().toISOString().slice(0,10)}.csv` : `Wywoz_Wszystkie_Zlecenia_${new Date().toISOString().slice(0,10)}.csv`;
+                link.setAttribute("download", filename);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                showNotification(`Pobrano plik CSV ${orderCode ? 'dla zlecenia ' + orderCode : ''}`, 'success');
+            };
+
+            // Przywrócenie ustawień i danych domyślnych
+            const handleExecuteResetData = () => {
+                localStorage.removeItem('magazyn_products');
+                localStorage.removeItem('magazyn_orders');
+                localStorage.removeItem('magazyn_assignments');
+                localStorage.removeItem('magazyn_app_pin');
+                localStorage.removeItem('magazyn_boss_pin');
+                setProducts(INITIAL_PRODUCTS);
+                setOrders(INITIAL_ORDERS);
+                setAssignments(INITIAL_ASSIGNMENTS);
+                setAppPin('1234');
+                setBossPin('4321');
+                setResetDataConfirm(false);
+                showNotification('Przywrócono ustawienia i dane domyślne.', 'success');
+            };
+
+            // Filtrowanie aktywnych zleceń w panelu pracownika
+            const matchingActiveOrders = useMemo(() => {
+                const activeOnly = orders.filter(o => o.status !== 'COMPLETED');
+                if (!orderInputText.trim()) return activeOnly;
+                const query = orderInputText.trim().toLowerCase();
+                return activeOnly.filter(o => 
+                    o.id.toLowerCase().includes(query) ||
+                    o.name.toLowerCase().includes(query) ||
+                    (o.client && o.client.toLowerCase().includes(query))
+                );
+            }, [orders, orderInputText]);
+
+            // Filtrowanie magazynu w panelu szefa
+            const filteredProducts = useMemo(() => {
+                return products.filter(p => {
+                    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                                          p.ean.includes(searchTerm) || 
+                                          p.category.toLowerCase().includes(searchTerm.toLowerCase());
+                    const matchesCategory = categoryFilter === 'ALL' || p.category === categoryFilter;
+                    const matchesLowStock = !showLowStockOnly || p.stock <= p.minStock;
+                    return matchesSearch && matchesCategory && matchesLowStock;
+                });
+            }, [products, searchTerm, categoryFilter, showLowStockOnly]);
+
+            const categoriesList = useMemo(() => {
+                return Array.from(new Set(products.map(p => p.category)));
+            }, [products]);
+
+            const lowStockCount = useMemo(() => {
+                return products.filter(p => p.stock <= p.minStock).length;
+            }, [products]);
+
+            // Podsumowanie każdego zlecenia
+            const ordersSummaryList = useMemo(() => {
+                return orders.map(ord => {
+                    const ordAssignments = assignments.filter(a => a.orderCode === ord.id);
+                    const totalItemsCount = ordAssignments.reduce((acc, curr) => acc + curr.quantity, 0);
+                    const uniqueSKUs = new Set(ordAssignments.map(a => a.ean)).size;
+                    const totalValue = ordAssignments.reduce((acc, curr) => acc + ((curr.price || 0) * curr.quantity), 0);
+                    const lastActivity = ordAssignments.length > 0 ? ordAssignments[0].timestamp : 'Brak skanów';
+                    
+                    return {
+                        ...ord,
+                        totalItemsCount,
+                        uniqueSKUs,
+                        totalValue,
+                        lastActivity,
+                        assignmentsCount: ordAssignments.length
+                    };
+                });
+            }, [orders, assignments]);
+
+            const filteredOrdersSummaryList = useMemo(() => {
+                return ordersSummaryList.filter(ord => {
+                    if (bossOrderStatusFilter === 'ACTIVE') return ord.status === 'ACTIVE';
+                    if (bossOrderStatusFilter === 'COMPLETED') return ord.status === 'COMPLETED';
+                    return true;
+                });
+            }, [ordersSummaryList, bossOrderStatusFilter]);
+
+            // Obsługa skanowania kodów z aparatu
+            useEffect(() => {
+                let html5QrCode = null;
+                if (isCameraActive) {
+                    html5QrCode = new Html5Qrcode("reader-camera");
+                    const config = { fps: 10, qrbox: { width: 260, height: 160 } };
+                    
+                    html5QrCode.start(
+                        { facingMode: "environment" },
+                        config,
+                        (decodedText) => {
+                            if (cameraScanMode === 'order') {
+                                handleSelectOrder(decodedText);
+                                showNotification(`Zeskanowano kod zlecenia: ${decodedText}`, 'success');
+                            } else {
+                                setProductBarcodeInput(decodedText);
+                                showNotification(`Zeskanowano produkt: ${decodedText}`, 'success');
+                            }
+                            setIsCameraActive(false);
+                        },
+                        () => {}
+                    ).catch(err => {
+                        console.error("Camera start error:", err);
+                        setIsCameraActive(false);
+                        showNotification('Nie udało się uruchomić kamery.', 'error');
+                    });
+                }
+
+                return () => {
+                    if (html5QrCode && html5QrCode.isScanning) {
+                        html5QrCode.stop().catch(err => console.error(err));
+                    }
+                };
+            }, [isCameraActive, cameraScanMode]);
+
+            // Ekran logowania przy wejściu na stronę
+            if (!isAppUnlocked) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center bg-slate-950 p-4">
+                        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl space-y-6 border border-slate-800 text-center">
+                            <div className="w-20 h-20 bg-indigo-600 text-white rounded-3xl flex items-center justify-center mx-auto text-3xl shadow-lg shadow-indigo-200">
+                                <i className="fa-solid fa-boxes-stacked"></i>
+                            </div>
+                            <div>
+                                <h2 className="text-2xl font-black text-slate-900">MagazynPro</h2>
+                                <p className="text-xs text-slate-500 mt-1">System Skanowania & Zarządzania Magazynem</p>
+                            </div>
+                            <form onSubmit={handleAccessPinSubmit} className="space-y-4">
+                                <div>
+                                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                                        Wpisz PIN Dostępu do Strony
+                                    </label>
+                                    <input
+                                        type="password"
+                                        maxLength="10"
+                                        value={accessPinInput}
+                                        onChange={(e) => setAccessPinInput(e.target.value)}
+                                        placeholder="Wpisz PIN Strony"
+                                        className="w-full text-center text-3xl font-mono font-bold tracking-widest py-4 bg-slate-50 border-2 border-slate-300 rounded-2xl focus:border-indigo-600 focus:bg-white focus:outline-none transition-all shadow-inner"
+                                        autoFocus
+                                    />
+                                </div>
+                                {accessPinError && (
+                                    <p className="text-xs font-bold text-rose-600 bg-rose-50 py-2.5 rounded-xl border border-rose-200">
+                                        <i className="fa-solid fa-triangle-exclamation mr-1.5"></i>
+                                        {accessPinError}
+                                    </p>
+                                )}
+                                <button
+                                    type="submit"
+                                    className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-base rounded-2xl shadow-lg shadow-indigo-200 active:scale-98 transition-all flex items-center justify-center space-x-2"
+                                >
+                                    <i className="fa-solid fa-key"></i>
+                                    <span>WEJDŹ DO SYSTEMU</span>
+                                </button>
+                            </form>
+                            <div className="text-[11px] text-slate-400 border-t border-slate-100 pt-4 flex items-center justify-center space-x-1">
+                                <i className="fa-solid fa-shield-halved text-emerald-500"></i>
+                                <span>Autoryzowany dostęp magazynowy</span>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen flex flex-col bg-slate-100">
+                    {/* Górny pasek nawigacji */}
+                    <header className="bg-slate-900 text-white shadow-md sticky top-0 z-40 no-print">
+                        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+                            <div className="flex items-center space-x-3">
+                                <div className="bg-indigo-600 p-2 rounded-xl flex items-center justify-center text-white text-lg">
+                                    <i className="fa-solid fa-boxes-stacked"></i>
+                                </div>
+                                <div>
+                                    <div className="flex items-center space-x-2">
+                                        <h1 className="font-extrabold text-lg tracking-tight leading-none text-white">MagazynPro</h1>
+                                        {cloudSynced ? (
+                                            <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold text-[10px] px-2 py-0.5 rounded-full flex items-center space-x-1" title="Automatyczna synchronizacja na żywo aktywna">
+                                                <i className="fa-solid fa-cloud text-[9px] animate-pulse"></i>
+                                                <span>Chmura Live</span>
+                                            </span>
+                                        ) : (
+                                            <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 font-bold text-[10px] px-2 py-0.5 rounded-full flex items-center space-x-1">
+                                                <i className="fa-solid fa-spinner fa-spin text-[9px]"></i>
+                                                <span>Łączenie...</span>
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="text-[11px] text-slate-400">System Skanowania Kodów & Zarządzania</p>
+                                </div>
+                            </div>
+
+                            {/* Przełącznik trybu pracy i przycisk blokady */}
+                            <div className="flex items-center space-x-3">
+                                <div className="bg-slate-800 p-1 rounded-xl flex border border-slate-700">
+                                    <button
+                                        onClick={() => handleRoleSwitch('worker')}
+                                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-2 ${
+                                            role === 'worker' 
+                                                ? 'bg-emerald-600 text-white shadow-sm' 
+                                                : 'text-slate-400 hover:text-white'
+                                        }`}
+                                    >
+                                        <i className="fa-solid fa-barcode"></i>
+                                        <span>SKANER PRACOWNIKA</span>
+                                    </button>
+                                    <button
+                                        onClick={() => handleRoleSwitch('boss')}
+                                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-2 ${
+                                            role === 'boss' 
+                                                ? 'bg-amber-600 text-white shadow-sm' 
+                                                : 'text-slate-400 hover:text-white'
+                                        }`}
+                                    >
+                                        <i className="fa-solid fa-user-shield"></i>
+                                        <span>PANEL SZEFA</span>
+                                        {!isBossAuthenticated && <i className="fa-solid fa-lock text-[10px] text-amber-300"></i>}
+                                    </button>
+                                </div>
+
+                                <button
+                                    onClick={() => {
+                                        sessionStorage.removeItem('magazyn_unlocked');
+                                        setIsAppUnlocked(false);
+                                        setIsBossAuthenticated(false);
+                                    }}
+                                    className="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white p-2.5 rounded-xl border border-slate-700 text-xs font-bold flex items-center space-x-1.5 transition-colors"
+                                    title="Zablokuj stronę"
+                                >
+                                    <i className="fa-solid fa-lock text-amber-400"></i>
+                                    <span className="hidden md:inline">Zablokuj</span>
+                                </button>
+                            </div>
+                        </div>
+                    </header>
+
+                    {/* Powiadomienie toast */}
+                    {toast && (
+                        <div className="fixed bottom-5 right-5 z-50 max-w-md w-full no-print">
+                            <div className={`p-4 rounded-xl shadow-2xl border flex items-center justify-between space-x-3 ${
+                                toast.type === 'error'
+                                    ? 'bg-rose-900 border-rose-700 text-rose-100'
+                                    : 'bg-emerald-900 border-emerald-700 text-emerald-100'
+                            }`}>
+                                <div className="flex items-center space-x-3">
+                                    <i className={`fa-solid text-2xl ${toast.type === 'error' ? 'fa-triangle-exclamation text-rose-400' : 'fa-circle-check text-emerald-400'}`}></i>
+                                    <p className="text-sm font-semibold">{toast.message}</p>
+                                </div>
+                                <button onClick={() => setToast(null)} className="text-slate-300 hover:text-white">
+                                    <i className="fa-solid fa-xmark"></i>
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Zawartość główna */}
+                    <main className="flex-grow max-w-7xl w-full mx-auto p-4 sm:p-6">
+
+                        {/* PANEL PRACOWNIKA */}
+                        {role === 'worker' && (
+                            <div className="max-w-2xl mx-auto space-y-6">
+                                
+                                <div className="bg-slate-900 text-white rounded-2xl p-4 shadow-md flex items-center justify-between">
+                                    <div className="flex items-center space-x-3">
+                                        <div className={`w-9 h-9 rounded-full font-extrabold flex items-center justify-center text-sm ${
+                                            workerStep === 1 ? 'bg-amber-500 text-slate-950' : 'bg-emerald-500 text-slate-950'
+                                        }`}>
+                                            {workerStep === 1 ? '1' : '2'}
+                                        </div>
+                                        <div>
+                                            <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                                                {workerStep === 1 ? 'Krok 1 z 2: Wybór Zlecenia' : 'Krok 2 z 2: Skanowanie Produktów'}
+                                            </span>
+                                            <h2 className="text-base font-bold">
+                                                {workerStep === 1 ? 'Wskaż Aktywne Zlecenie' : `Zlecenie: ${activeOrderCode}`}
+                                            </h2>
+                                        </div>
+                                    </div>
+
+                                    {workerStep === 2 && (
+                                        <div className="flex items-center space-x-2">
+                                            <span className="text-[11px] font-mono font-bold bg-slate-800 text-amber-300 px-2.5 py-1.5 rounded-xl border border-slate-700 flex items-center space-x-1.5" title="Czas do automatycznego powrotu po bezczynności">
+                                                <i className="fa-regular fa-clock"></i>
+                                                <span>{inactivityTimer}s</span>
+                                            </span>
+                                            <button
+                                                onClick={() => {
+                                                    setWorkerStep(1);
+                                                    playAudioBeep('click');
+                                                }}
+                                                className="bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center space-x-1.5"
+                                            >
+                                                <i className="fa-solid fa-arrows-rotate"></i>
+                                                <span>Zmień Zlecenie</span>
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {bigSuccessBanner && (
+                                    <div className="bg-emerald-600 text-white p-6 rounded-2xl shadow-xl text-center space-y-2 animate-bounce">
+                                        <div className="w-12 h-12 bg-white text-emerald-600 rounded-full flex items-center justify-center mx-auto text-2xl font-bold">
+                                            <i className="fa-solid fa-check"></i>
+                                        </div>
+                                        <h3 className="text-xl font-extrabold">PRZYPISANO DO ZLECENIA!</h3>
+                                        <p className="text-emerald-100 text-base font-semibold">
+                                            +{bigSuccessBanner.qty} {bigSuccessBanner.unit} [{bigSuccessBanner.productName}] ➔ <span className="underline font-bold">{bigSuccessBanner.orderCode}</span>
+                                        </p>
+                                    </div>
+                                )}
+
+                                {/* Krok 1: Wybór zlecenia */}
+                                {workerStep === 1 && (
+                                    <div className="bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200 space-y-6">
+                                        <div className="text-center space-y-2">
+                                            <div className="w-16 h-16 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center mx-auto text-3xl">
+                                                <i className="fa-solid fa-barcode"></i>
+                                            </div>
+                                            <h3 className="text-xl font-bold text-slate-900">Zeskanuj lub Wpisz Kod Zlecenia</h3>
+                                            <p className="text-xs text-slate-500">
+                                                Zeskanuj kod zlecenia albo zacznij wpisywać jego numer lub nazwę – podpowiedzi pojawią się automatycznie.
+                                            </p>
+                                        </div>
+
+                                        {isCameraActive && cameraScanMode === 'order' && (
+                                            <div className="bg-slate-900 p-4 rounded-2xl text-center text-white">
+                                                <p className="text-xs text-slate-300 mb-2">Skieruj aparat na kod kreskowy zlecenia</p>
+                                                <div id="reader-camera" className="w-full max-w-sm mx-auto overflow-hidden rounded-xl"></div>
+                                                <button
+                                                    onClick={() => setIsCameraActive(false)}
+                                                    className="mt-3 px-4 py-1.5 bg-rose-600 text-xs font-bold rounded-lg"
+                                                >
+                                                    Zamknij Kamerę
+                                                </button>
+                                            </div>
+                                        )}
+
+                                        <div className="space-y-3">
+                                            <form onSubmit={(e) => { e.preventDefault(); handleSelectOrder(orderInputText); }} className="space-y-4">
+                                                <div className="relative">
+                                                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
+                                                        <i className="fa-solid fa-magnifying-glass text-lg"></i>
+                                                    </div>
+                                                    <input
+                                                        ref={orderInputRef}
+                                                        type="text"
+                                                        value={orderInputText}
+                                                        onChange={(e) => setOrderInputText(e.target.value)}
+                                                        placeholder="Zacznij pisać kod lub nazwę zlecenia..."
+                                                        className="w-full pl-12 pr-12 py-4 bg-slate-50 border-2 border-amber-300 focus:border-amber-500 rounded-2xl text-slate-900 font-mono font-bold text-base focus:bg-white focus:outline-none transition-all shadow-inner"
+                                                        autoFocus
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setCameraScanMode('order');
+                                                            setIsCameraActive(true);
+                                                        }}
+                                                        className="absolute inset-y-0 right-0 pr-4 flex items-center text-amber-600 hover:text-amber-800"
+                                                        title="Uruchom skaner kamery"
+                                                    >
+                                                        <i className="fa-solid fa-camera text-xl"></i>
+                                                    </button>
+                                                </div>
+
+                                                <button
+                                                    type="submit"
+                                                    className="w-full py-4 bg-amber-600 hover:bg-amber-500 text-white font-extrabold text-base rounded-2xl shadow-lg shadow-amber-200 transition-all flex items-center justify-center space-x-2"
+                                                >
+                                                    <span>Zatwierdź Wybrane Zlecenie</span>
+                                                    <i className="fa-solid fa-arrow-right"></i>
+                                                </button>
+                                            </form>
+
+                                            <div className="pt-2">
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                                                        {orderInputText.trim() ? `Sugerowane Zlecenia (${matchingActiveOrders.length}):` : 'Wszystkie Aktywne Zlecenia:'}
+                                                    </span>
+                                                    {orderInputText && (
+                                                        <button 
+                                                            onClick={() => setOrderInputText('')} 
+                                                            className="text-[11px] font-bold text-slate-400 hover:text-slate-600"
+                                                        >
+                                                            Wyczyść filtr
+                                                        </button>
+                                                    )}
+                                                </div>
+
+                                                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                                                    {matchingActiveOrders.length > 0 ? (
+                                                        matchingActiveOrders.map(o => (
+                                                            <button
+                                                                key={o.id}
+                                                                onClick={() => handleSelectOrder(o.id)}
+                                                                className="w-full p-3.5 bg-slate-50 hover:bg-amber-50 border-2 border-slate-200 hover:border-amber-400 rounded-xl text-left transition-all flex items-center justify-between group shadow-sm active:scale-98"
+                                                            >
+                                                                <div>
+                                                                    <div className="flex items-center space-x-2">
+                                                                        <span className="font-mono font-black text-amber-600 text-sm bg-amber-100/60 px-2 py-0.5 rounded-md">
+                                                                            {o.id}
+                                                                        </span>
+                                                                        <span className="bg-emerald-100 text-emerald-800 font-bold text-[9px] px-2 py-0.5 rounded-full">
+                                                                            AKTYWNE
+                                                                        </span>
+                                                                    </div>
+                                                                    <span className="font-extrabold text-slate-900 text-sm group-hover:text-amber-900 block mt-1">
+                                                                        {o.name}
+                                                                    </span>
+                                                                    {o.client && (
+                                                                        <span className="text-[11px] text-slate-400 font-medium block">
+                                                                            Klient: {o.client}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                                <div className="flex items-center space-x-2">
+                                                                    <span className="text-xs font-bold text-amber-600 group-hover:translate-x-1 transition-transform">
+                                                                        Wybierz <i className="fa-solid fa-chevron-right ml-1"></i>
+                                                                    </span>
+                                                                </div>
+                                                            </button>
+                                                        ))
+                                                    ) : (
+                                                        <div className="p-6 text-center bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-bold">
+                                                            <i className="fa-solid fa-triangle-exclamation text-base mb-1 block"></i>
+                                                            Brak aktywnego zlecenia pasującego do frazy "{orderInputText}".
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="pt-2 border-t border-slate-100">
+                                            <span className="text-[11px] font-bold text-slate-400 block mb-2 text-center">Kody kreskowe aktywnych zleceń do szybkiego wyboru:</span>
+                                            <div className="flex flex-wrap gap-2 justify-center">
+                                                {orders.filter(o => o.status !== 'COMPLETED').map(o => (
+                                                    <button
+                                                        key={o.id}
+                                                        onClick={() => handleSelectOrder(o.id)}
+                                                        className="px-3 py-1.5 border rounded-lg text-xs font-mono text-left bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100"
+                                                    >
+                                                        <i className="fa-solid fa-barcode mr-1.5"></i>
+                                                        <span className="font-bold">{o.id}</span>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                    </div>
+                                )}
+
+                                {/* Krok 2: Skanowanie produktów */}
+                                {workerStep === 2 && (
+                                    <div className="bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200 space-y-6">
+                                        
+                                        {isCameraActive && cameraScanMode === 'product' && (
+                                            <div className="bg-slate-900 p-4 rounded-2xl text-center text-white">
+                                                <p className="text-xs text-slate-300 mb-2">Skieruj aparat na kod kreskowy EAN produktu</p>
+                                                <div id="reader-camera" className="w-full max-w-sm mx-auto overflow-hidden rounded-xl"></div>
+                                                <button
+                                                    onClick={() => setIsCameraActive(false)}
+                                                    className="mt-3 px-4 py-1.5 bg-rose-600 text-xs font-bold rounded-lg"
+                                                >
+                                                    Zamknij Kamerę
+                                                </button>
+                                            </div>
+                                        )}
+
+                                        <div className="space-y-2">
+                                            <div className="flex items-center justify-between">
+                                                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500">
+                                                    Skanuj Kod Kreskowy Produktu (EAN / SKU)
+                                                </label>
+                                                <button
+                                                    onClick={() => {
+                                                        setCameraScanMode('product');
+                                                        setIsCameraActive(true);
+                                                    }}
+                                                    className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center space-x-1"
+                                                >
+                                                    <i className="fa-solid fa-camera"></i>
+                                                    <span>Użyj Kamery</span>
+                                                </button>
+                                            </div>
+
+                                            <div className="relative">
+                                                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-emerald-600">
+                                                    <i className="fa-solid fa-barcode text-2xl animate-pulse"></i>
+                                                </div>
+                                                <input
+                                                    ref={productInputRef}
+                                                    type="text"
+                                                    value={productBarcodeInput}
+                                                    onChange={(e) => setProductBarcodeInput(e.target.value)}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter' && matchedProduct) {
+                                                            handleConfirmAssignment();
+                                                        }
+                                                    }}
+                                                    placeholder="Zeskanuj kod skanerem..."
+                                                    className="w-full pl-12 pr-10 py-4 bg-slate-50 border-2 border-slate-300 focus:border-emerald-500 rounded-2xl text-slate-900 font-mono font-extrabold text-lg focus:bg-white focus:outline-none transition-all shadow-inner"
+                                                    autoFocus
+                                                />
+                                                {productBarcodeInput && (
+                                                    <button
+                                                        onClick={() => {
+                                                            setProductBarcodeInput('');
+                                                            setMatchedProduct(null);
+                                                            if (productInputRef.current) productInputRef.current.focus();
+                                                        }}
+                                                        className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-slate-600"
+                                                    >
+                                                        <i className="fa-solid fa-circle-xmark text-lg"></i>
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {matchedProduct ? (
+                                            <div className="bg-emerald-50 border-2 border-emerald-300 rounded-2xl p-6 space-y-4">
+                                                <div className="flex items-start justify-between">
+                                                    <div>
+                                                        <span className="bg-emerald-200 text-emerald-900 font-bold text-[10px] px-2.5 py-0.5 rounded-md uppercase">
+                                                            Rozpoznano Kod: {matchedProduct.ean}
+                                                        </span>
+                                                        <h3 className="text-xl font-extrabold text-slate-900 mt-1 leading-tight">
+                                                            {matchedProduct.name}
+                                                        </h3>
+                                                        <p className="text-xs text-slate-500 mt-0.5">Kategoria: {matchedProduct.category}</p>
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <span className="text-[10px] text-slate-500 block">Dostępny Stan</span>
+                                                        <span className="text-xl font-black text-emerald-700">
+                                                            {matchedProduct.stock} <span className="text-xs font-normal">{matchedProduct.unit}</span>
+                                                        </span>
+                                                    </div>
+                                                </div>
+
+                                                <div className="space-y-3 pt-2">
+                                                    <label className="block text-xs font-bold text-slate-700 uppercase text-center">
+                                                        Ilość do przypisania ({matchedProduct.unit})
+                                                    </label>
+                                                    <div className="flex items-center justify-center space-x-4 max-w-xs mx-auto">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setAssignQty(Math.max(1, assignQty - 1))}
+                                                            className="w-14 h-14 bg-white hover:bg-slate-100 active:scale-95 font-black text-2xl rounded-2xl border border-slate-300 shadow-sm"
+                                                        >
+                                                            -
+                                                        </button>
+                                                        <input
+                                                            type="number"
+                                                            min="1"
+                                                            max={matchedProduct.stock}
+                                                            value={assignQty}
+                                                            onChange={(e) => setAssignQty(Math.max(1, parseInt(e.target.value) || 1))}
+                                                            className="w-24 h-14 text-center text-2xl font-black bg-white border-2 border-emerald-400 rounded-2xl focus:outline-none"
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setAssignQty(Math.min(matchedProduct.stock, assignQty + 1))}
+                                                            className="w-14 h-14 bg-white hover:bg-slate-100 active:scale-95 font-black text-2xl rounded-2xl border border-slate-300 shadow-sm"
+                                                        >
+                                                            +
+                                                        </button>
+                                                    </div>
+
+                                                    <button
+                                                        onClick={handleConfirmAssignment}
+                                                        className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-lg rounded-2xl shadow-xl shadow-emerald-200 active:scale-98 transition-all flex items-center justify-center space-x-2"
+                                                    >
+                                                        <i className="fa-solid fa-plus-circle text-xl"></i>
+                                                        <span>PRZYPISZ DO ZLECENIA {activeOrderCode}</span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="p-8 border-2 border-dashed border-slate-200 rounded-2xl text-center space-y-2">
+                                                <i className="fa-solid fa-barcode text-4xl text-slate-300"></i>
+                                                <h4 className="font-bold text-slate-600 text-sm">Gotowy do Skanowania</h4>
+                                                <p className="text-xs text-slate-400 max-w-xs mx-auto">
+                                                    Przyłóż skaner sprzętowy do produktu lub wpisz kod EAN.
+                                                </p>
+                                            </div>
+                                        )}
+
+                                        <div className="pt-2 border-t border-slate-100">
+                                            <button
+                                                onClick={() => setShowTestBarcodesWorker(!showTestBarcodesWorker)}
+                                                className="text-xs text-slate-400 hover:text-slate-600 font-semibold flex items-center justify-between w-full"
+                                            >
+                                                <span>{showTestBarcodesWorker ? 'Ukryj kody testowe' : 'Pokaż kody testowe do klikania'}</span>
+                                                <i className={`fa-solid ${showTestBarcodesWorker ? 'fa-chevron-up' : 'fa-chevron-down'}`}></i>
+                                            </button>
+
+                                            {showTestBarcodesWorker && (
+                                                <div className="flex flex-wrap gap-2 pt-3">
+                                                    {products.map(p => (
+                                                        <button
+                                                            key={p.id}
+                                                            onClick={() => {
+                                                                setProductBarcodeInput(p.ean);
+                                                                playAudioBeep('click');
+                                                            }}
+                                                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-indigo-50 border rounded-lg text-left text-xs font-mono"
+                                                        >
+                                                            <div className="font-bold text-indigo-600">{p.ean}</div>
+                                                            <div className="text-[10px] text-slate-500 truncate max-w-[120px]">{p.name}</div>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                    </div>
+                                )}
+
+                            </div>
+                        )}
+
+                        {/* PANEL SZEFA */}
+                        {role === 'boss' && (
+                            <div className="space-y-6">
+                                
+                                <div className="bg-slate-900 rounded-2xl p-6 text-white shadow-xl flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+                                    <div>
+                                        <div className="flex items-center space-x-2 mb-1">
+                                            <span className="bg-amber-500 text-slate-950 font-black text-[10px] px-2.5 py-0.5 rounded-full uppercase">
+                                                Panel Szefa
+                                            </span>
+                                            {lowStockCount > 0 && (
+                                                <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+                                                    {lowStockCount} ostrzeżeń niskiego stanu!
+                                                </span>
+                                            )}
+                                        </div>
+                                        <h2 className="text-2xl font-bold">Zarządzanie Magazynem & Podgląd Zleceń</h2>
+                                        <p className="text-slate-400 text-xs mt-1">Podgląd wszystkich zleceń, weryfikacja zeskanowanych pozycji, edycja bazy i drukowanie etykiet.</p>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <button
+                                            onClick={() => {
+                                                setEditingProduct(null);
+                                                const randomEan = '590' + Math.floor(100000000 + Math.random() * 900000000);
+                                                setFormData({ name: '', ean: randomEan, category: 'Ogólne', price: 10, stock: 20, minStock: 5, unit: 'szt' });
+                                                setShowProductModal(true);
+                                            }}
+                                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-md flex items-center space-x-2"
+                                        >
+                                            <i className="fa-solid fa-plus"></i>
+                                            <span>Dodaj Produkt</span>
+                                        </button>
+                                        <button
+                                            onClick={() => setShowNewOrderModal(true)}
+                                            className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-md flex items-center space-x-2"
+                                        >
+                                            <i className="fa-solid fa-folder-plus"></i>
+                                            <span>Nowe Zlecenie</span>
+                                        </button>
+                                        <button
+                                            onClick={exportInventoryCSV}
+                                            className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs px-3.5 py-2.5 rounded-xl border border-slate-700 flex items-center space-x-2"
+                                        >
+                                            <i className="fa-solid fa-file-csv text-emerald-400"></i>
+                                            <span>Eksport Bazy CSV</span>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                    <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                                        <span className="text-xs font-semibold text-slate-400 block">Pozycje Magazynowe</span>
+                                        <span className="text-2xl font-black text-slate-900">{products.length}</span>
+                                        <span className="text-[10px] text-slate-400 block mt-1">Produktów w bazie</span>
+                                    </div>
+                                    <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                                        <span className="text-xs font-semibold text-slate-400 block">Niski Stan</span>
+                                        <span className={`text-2xl font-black ${lowStockCount > 0 ? 'text-rose-600' : 'text-slate-900'}`}>
+                                            {lowStockCount}
+                                        </span>
+                                        <span className="text-[10px] text-slate-400 block mt-1">Wymaga uzupełnienia</span>
+                                    </div>
+                                    <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                                        <span className="text-xs font-semibold text-slate-400 block">Zarejestrowane Skanowania</span>
+                                        <span className="text-2xl font-black text-indigo-600">{assignments.length}</span>
+                                        <span className="text-[10px] text-slate-400 block mt-1">Operacji skanera</span>
+                                    </div>
+                                    <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                                        <span className="text-xs font-semibold text-slate-400 block">Wszystkie Zlecenia</span>
+                                        <span className="text-2xl font-black text-amber-600">{orders.length}</span>
+                                        <span className="text-[10px] text-slate-400 block mt-1">W systemie</span>
+                                    </div>
+                                </div>
+
+                                <div className="border-b border-slate-200 flex space-x-6 overflow-x-auto">
+                                    <button
+                                        onClick={() => setBossTab('inventory')}
+                                        className={`pb-3 font-bold text-sm transition-all border-b-2 whitespace-nowrap ${
+                                            bossTab === 'inventory'
+                                                ? 'border-indigo-600 text-indigo-600'
+                                                : 'border-transparent text-slate-500 hover:text-slate-800'
+                                        }`}
+                                    >
+                                        <i className="fa-solid fa-boxes-stacked mr-2"></i>
+                                        Baza Stanów Magazynowych
+                                    </button>
+                                    <button
+                                        onClick={() => setBossTab('orders')}
+                                        className={`pb-3 font-bold text-sm transition-all border-b-2 whitespace-nowrap ${
+                                            bossTab === 'orders'
+                                                ? 'border-indigo-600 text-indigo-600'
+                                                : 'border-transparent text-slate-500 hover:text-slate-800'
+                                        }`}
+                                    >
+                                        <i className="fa-solid fa-receipt mr-2"></i>
+                                        Podgląd Zleceń & Wydania
+                                    </button>
+                                    <button
+                                        onClick={() => setBossTab('barcodes')}
+                                        className={`pb-3 font-bold text-sm transition-all border-b-2 whitespace-nowrap ${
+                                            bossTab === 'barcodes'
+                                                ? 'border-indigo-600 text-indigo-600'
+                                                : 'border-transparent text-slate-500 hover:text-slate-800'
+                                        }`}
+                                    >
+                                        <i className="fa-solid fa-print mr-2"></i>
+                                        Druk Etykiet Barcode
+                                    </button>
+                                    <button
+                                        onClick={() => setBossTab('settings')}
+                                        className={`pb-3 font-bold text-sm transition-all border-b-2 whitespace-nowrap ${
+                                            bossTab === 'settings'
+                                                ? 'border-indigo-600 text-indigo-600'
+                                                : 'border-transparent text-slate-500 hover:text-slate-800'
+                                        }`}
+                                    >
+                                        <i className="fa-solid fa-gear mr-2"></i>
+                                        Ustawienia & PIN
+                                    </button>
+                                </div>
+
+                                {/* Zakładka 1: Baza magazynowa */}
+                                {bossTab === 'inventory' && (
+                                    <div className="space-y-4">
+                                        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row items-center justify-between gap-3">
+                                            <div className="relative flex-grow max-w-md w-full">
+                                                <i className="fa-solid fa-magnifying-glass absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 text-xs"></i>
+                                                <input
+                                                    type="text"
+                                                    value={searchTerm}
+                                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                                    placeholder="Szukaj po nazwie, EAN lub kategorii..."
+                                                    className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:bg-white focus:outline-none"
+                                                />
+                                            </div>
+
+                                            <div className="flex items-center space-x-3 w-full md:w-auto">
+                                                <select
+                                                    value={categoryFilter}
+                                                    onChange={(e) => setCategoryFilter(e.target.value)}
+                                                    className="bg-slate-50 border border-slate-300 rounded-lg text-xs font-semibold px-3 py-2"
+                                                >
+                                                    <option value="ALL">Wszystkie Kategorie</option>
+                                                    {categoriesList.map(cat => (
+                                                        <option key={cat} value={cat}>{cat}</option>
+                                                    ))}
+                                                </select>
+
+                                                <label className="flex items-center space-x-2 text-xs font-semibold text-slate-700 cursor-pointer bg-slate-50 px-3 py-2 rounded-lg border border-slate-300">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={showLowStockOnly}
+                                                        onChange={(e) => setShowLowStockOnly(e.target.checked)}
+                                                        className="rounded text-rose-600"
+                                                    />
+                                                    <span className={showLowStockOnly ? 'text-rose-600 font-bold' : ''}>Niski Stan</span>
+                                                </label>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                                            <div className="overflow-x-auto">
+                                                <table className="w-full text-left text-xs text-slate-600">
+                                                    <thead className="bg-slate-50 text-slate-700 font-bold uppercase tracking-wider text-[11px] border-b border-slate-200">
+                                                        <tr>
+                                                            <th className="py-3.5 px-4">Kod EAN / SKU</th>
+                                                            <th className="py-3.5 px-4">Nazwa Produktu</th>
+                                                            <th className="py-3.5 px-4">Kategoria</th>
+                                                            <th className="py-3.5 px-4 text-right">Cena Jedn.</th>
+                                                            <th className="py-3.5 px-4 text-center">Stan Magazynowy</th>
+                                                            <th className="py-3.5 px-4 text-center">Status</th>
+                                                            <th className="py-3.5 px-4 text-right">Zarządzaj</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-slate-100">
+                                                        {filteredProducts.length > 0 ? (
+                                                            filteredProducts.map(p => {
+                                                                const isLow = p.stock <= p.minStock;
+                                                                return (
+                                                                    <tr key={p.id} className="hover:bg-slate-50 transition-colors">
+                                                                        <td className="py-3 px-4 font-mono font-bold text-slate-800">{p.ean}</td>
+                                                                        <td className="py-3 px-4 font-semibold text-slate-900">{p.name}</td>
+                                                                        <td className="py-3 px-4">
+                                                                            <span className="bg-slate-100 text-slate-600 font-medium px-2 py-0.5 rounded text-[10px]">
+                                                                                {p.category}
+                                                                            </span>
+                                                                        </td>
+                                                                        <td className="py-3 px-4 text-right font-bold text-slate-800">
+                                                                            {p.price ? p.price.toFixed(2) + ' zł' : '-'}
+                                                                        </td>
+                                                                        <td className="py-3 px-4 text-center">
+                                                                            <div className="inline-flex items-center space-x-2">
+                                                                                <button
+                                                                                    onClick={() => handleQuickStockAdjust(p.id, -1)}
+                                                                                    className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold flex items-center justify-center border border-slate-300"
+                                                                                >-</button>
+                                                                                <span className="font-bold text-sm text-slate-900 w-12 text-center">
+                                                                                    {p.stock} <span className="text-[10px] font-normal text-slate-500">{p.unit}</span>
+                                                                                </span>
+                                                                                <button
+                                                                                    onClick={() => handleQuickStockAdjust(p.id, 1)}
+                                                                                    className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold flex items-center justify-center border border-slate-300"
+                                                                                >+</button>
+                                                                            </div>
+                                                                        </td>
+                                                                        <td className="py-3 px-4 text-center">
+                                                                            {isLow ? (
+                                                                                <span className="bg-rose-100 text-rose-700 font-bold text-[10px] px-2.5 py-1 rounded-full">
+                                                                                    Niski stan (min: {p.minStock})
+                                                                                </span>
+                                                                            ) : (
+                                                                                <span className="bg-emerald-100 text-emerald-800 font-semibold text-[10px] px-2.5 py-1 rounded-full">
+                                                                                    OK
+                                                                                </span>
+                                                                            )}
+                                                                        </td>
+                                                                        <td className="py-3 px-4 text-right">
+                                                                            <div className="flex items-center justify-end space-x-2">
+                                                                                <button
+                                                                                    onClick={() => {
+                                                                                        setEditingProduct(p);
+                                                                                        setFormData({ ...p });
+                                                                                        setShowProductModal(true);
+                                                                                    }}
+                                                                                    className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg"
+                                                                                    title="Edytuj"
+                                                                                >
+                                                                                    <i className="fa-solid fa-pen"></i>
+                                                                                </button>
+                                                                                <button
+                                                                                    onClick={() => setDeleteConfirmTarget(p)}
+                                                                                    className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg"
+                                                                                    title="Usuń"
+                                                                                >
+                                                                                    <i className="fa-solid fa-trash"></i>
+                                                                                </button>
+                                                                            </div>
+                                                                        </td>
+                                                                    </tr>
+                                                                );
+                                                            })
+                                                        ) : (
+                                                            <tr>
+                                                                <td colSpan="7" className="py-8 text-center text-slate-400">
+                                                                    Brak produktów spełniających kryteria.
+                                                                </td>
+                                                            </tr>
+                                                        )}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Zakładka 2: Zlecenia i historia skanów */}
+                                {bossTab === 'orders' && (
+                                    <div className="space-y-6">
+                                        
+                                        <div>
+                                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                                                <div>
+                                                    <h3 className="font-extrabold text-slate-900 text-base">Zarządzanie Zleceniami i Rejestr</h3>
+                                                    <p className="text-xs text-slate-500">Twórz zlecenia, drukuj etykiety EAN dla zleceń i sprawdzaj zeskanowane produkty.</p>
+                                                </div>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <div className="bg-slate-100 p-1 rounded-xl flex border border-slate-200">
+                                                        <button
+                                                            onClick={() => setBossOrderStatusFilter('ALL')}
+                                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                                                                bossOrderStatusFilter === 'ALL' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'
+                                                            }`}
+                                                        >
+                                                            Wszystkie ({orders.length})
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setBossOrderStatusFilter('ACTIVE')}
+                                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                                                                bossOrderStatusFilter === 'ACTIVE' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-900'
+                                                            }`}
+                                                        >
+                                                            Aktywne ({orders.filter(o => o.status === 'ACTIVE').length})
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setBossOrderStatusFilter('COMPLETED')}
+                                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                                                                bossOrderStatusFilter === 'COMPLETED' ? 'bg-slate-700 text-white shadow-sm' : 'text-slate-500 hover:text-slate-900'
+                                                            }`}
+                                                        >
+                                                            Zamknięte ({orders.filter(o => o.status === 'COMPLETED').length})
+                                                        </button>
+                                                    </div>
+                                                    <button
+                                                        onClick={() => setShowNewOrderModal(true)}
+                                                        className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-3 py-2 rounded-xl shadow-sm flex items-center space-x-1.5"
+                                                    >
+                                                        <i className="fa-solid fa-plus"></i>
+                                                        <span>Nowe Zlecenie</span>
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                                {filteredOrdersSummaryList.length > 0 ? (
+                                                    filteredOrdersSummaryList.map(ord => (
+                                                        <div key={ord.id} className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between space-y-4 hover:shadow-md transition-all">
+                                                            <div>
+                                                                <div className="flex items-start justify-between">
+                                                                    <span className="font-mono font-black text-indigo-600 text-xs bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-100">
+                                                                        {ord.id}
+                                                                    </span>
+                                                                    <button
+                                                                        onClick={() => handleToggleOrderStatus(ord.id)}
+                                                                        className={`text-[10px] font-bold px-2.5 py-1 rounded-full flex items-center space-x-1 ${
+                                                                            ord.status === 'COMPLETED'
+                                                                                ? 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                                                                                : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                                                                        }`}
+                                                                        title="Kliknij, aby zmienić status zlecenia"
+                                                                    >
+                                                                        <i className={`fa-solid ${ord.status === 'COMPLETED' ? 'fa-lock' : 'fa-circle-check'}`}></i>
+                                                                        <span>{ord.status === 'COMPLETED' ? 'ZAKOŃCZONE' : 'AKTYWNE'}</span>
+                                                                    </button>
+                                                                </div>
+                                                                <h4 className="font-bold text-slate-900 text-base mt-2.5 leading-snug">{ord.name}</h4>
+                                                                <p className="text-xs text-slate-500 mt-0.5"><i className="fa-regular fa-building mr-1"></i>Klient: {ord.client || 'Brak danych'}</p>
+                                                            </div>
+
+                                                            <div className="bg-slate-50 p-3 rounded-xl grid grid-cols-3 gap-2 text-center border border-slate-100">
+                                                                <div>
+                                                                    <span className="text-[10px] text-slate-400 uppercase font-bold block">Sztuk</span>
+                                                                    <span className="font-extrabold text-slate-900 text-sm">{ord.totalItemsCount}</span>
+                                                                </div>
+                                                                <div>
+                                                                    <span className="text-[10px] text-slate-400 uppercase font-bold block">Pozycji SKU</span>
+                                                                    <span className="font-extrabold text-indigo-600 text-sm">{ord.uniqueSKUs}</span>
+                                                                </div>
+                                                                <div>
+                                                                    <span className="text-[10px] text-slate-400 uppercase font-bold block">Wartość</span>
+                                                                    <span className="font-extrabold text-emerald-700 text-sm">{ord.totalValue.toFixed(2)} zł</span>
+                                                                </div>
+                                                            </div>
+
+                                                            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                                                                <span className="text-[10px] text-slate-400">Ostatnio: {ord.lastActivity}</span>
+                                                                <div className="flex space-x-1.5">
+                                                                    <button
+                                                                        onClick={() => setBossTab('barcodes')}
+                                                                        className="bg-slate-100 hover:bg-slate-200 text-slate-700 p-2 rounded-xl text-xs"
+                                                                        title="Drukuj kod kreskowy tego zlecenia"
+                                                                    >
+                                                                        <i className="fa-solid fa-barcode"></i>
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => {
+                                                                            setInspectingOrder(ord);
+                                                                            setInspectSearch('');
+                                                                        }}
+                                                                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-3 py-2 rounded-xl transition-all shadow-sm flex items-center space-x-1.5"
+                                                                    >
+                                                                        <i className="fa-solid fa-eye"></i>
+                                                                        <span>Szczegóły</span>
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    ))
+                                                ) : (
+                                                    <div className="col-span-full bg-white p-8 rounded-2xl border border-slate-200 text-center text-slate-400 font-medium">
+                                                        <i className="fa-solid fa-folder-open text-3xl mb-2 block text-slate-300"></i>
+                                                        Brak zleceń w kategorii: <span className="font-bold text-slate-600">{bossOrderStatusFilter === 'ACTIVE' ? 'Aktywne' : 'Zamknięte'}</span>.
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div className="pt-6 border-t border-slate-200">
+                                            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row items-center justify-between gap-3 mb-4">
+                                                <h4 className="font-bold text-slate-800 text-sm">Całkowity Rejestr Wydań Skanera</h4>
+                                                <div className="flex items-center space-x-3 w-full md:w-auto">
+                                                    <select
+                                                        value={historyOrderFilter}
+                                                        onChange={(e) => setHistoryOrderFilter(e.target.value)}
+                                                        className="bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold px-3 py-2"
+                                                    >
+                                                        <option value="ALL">Filtruj wg Zlecenia: Wszystkie ({assignments.length})</option>
+                                                        {orders.map(o => (
+                                                            <option key={o.id} value={o.id}>[{o.id}] {o.name}</option>
+                                                        ))}
+                                                    </select>
+                                                    <button
+                                                        onClick={() => exportOrderCSV(null)}
+                                                        className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-3 py-2 rounded-lg flex items-center space-x-1.5"
+                                                    >
+                                                        <i className="fa-solid fa-file-csv"></i>
+                                                        <span>Eksport CSV</span>
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden overflow-x-auto">
+                                                <table className="w-full text-left text-xs text-slate-600">
+                                                    <thead className="bg-slate-50 text-slate-700 font-bold uppercase tracking-wider text-[11px] border-b border-slate-200">
+                                                        <tr>
+                                                            <th className="py-3 px-4">Kod Zlecenia</th>
+                                                            <th className="py-3 px-4">Nazwa Produktu</th>
+                                                            <th className="py-3 px-4">Kod EAN</th>
+                                                            <th className="py-3 px-4 text-center">Ilość</th>
+                                                            <th className="py-3 px-4 text-right">Wartość</th>
+                                                            <th className="py-3 px-4">Data i Godzina</th>
+                                                            <th className="py-3 px-4 text-right">Cofnij</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-slate-100">
+                                                        {assignments
+                                                            .filter(a => historyOrderFilter === 'ALL' || a.orderCode === historyOrderFilter)
+                                                            .map(a => (
+                                                                <tr key={a.id} className="hover:bg-slate-50">
+                                                                    <td className="py-3 px-4 font-bold text-indigo-600">{a.orderCode}</td>
+                                                                    <td className="py-3 px-4 font-semibold text-slate-800">{a.productName}</td>
+                                                                    <td className="py-3 px-4 font-mono text-slate-500">{a.ean}</td>
+                                                                    <td className="py-3 px-4 text-center font-bold text-slate-900">
+                                                                        {a.quantity} {a.unit}
+                                                                    </td>
+                                                                    <td className="py-3 px-4 text-right font-bold text-slate-800">
+                                                                        {a.price ? (a.price * a.quantity).toFixed(2) + ' zł' : '-'}
+                                                                    </td>
+                                                                    <td className="py-3 px-4 text-slate-400">{a.timestamp}</td>
+                                                                    <td className="py-3 px-4 text-right">
+                                                                        <button
+                                                                            onClick={() => setDeleteScanConfirmTarget(a)}
+                                                                            className="text-rose-600 hover:text-rose-800 font-bold hover:underline"
+                                                                        >
+                                                                            Cofnij skan
+                                                                        </button>
+                                                                    </td>
+                                                                </tr>
+                                                            ))
+                                                        }
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+
+                                    </div>
+                                )}
+
+                                {/* Zakładka 3: Druk etykiet */}
+                                {bossTab === 'barcodes' && (
+                                    <div className="space-y-6">
+                                        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between no-print">
+                                            <div>
+                                                <h3 className="font-bold text-slate-800 text-sm">Arkusz Etykiet z Kodami Kreskowymi</h3>
+                                                <p className="text-xs text-slate-400">Generowanie etykiet do druku dla produktów oraz arkuszy zleceń.</p>
+                                            </div>
+                                            <button
+                                                onClick={() => window.print()}
+                                                className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-md flex items-center space-x-2"
+                                            >
+                                                <i className="fa-solid fa-print"></i>
+                                                <span>Drukuj Etykiety</span>
+                                            </button>
+                                        </div>
+
+                                        <div>
+                                            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 no-print">
+                                                Kody Kreskowe Zleceń (Dla Pracowników do Skanowania)
+                                            </h4>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                                                {orders.map(o => (
+                                                    <div key={o.id} className="bg-white p-4 rounded-xl border border-slate-300 text-center flex flex-col justify-between items-center shadow-sm">
+                                                        <span className="text-[10px] font-bold text-amber-600 uppercase">KOD ZLECENIA</span>
+                                                        <h5 className="font-extrabold text-slate-900 text-sm mt-1">{o.name}</h5>
+                                                        <div className="my-2">
+                                                            <BarcodeVisual value={o.id} width={1.8} height={45} fontSize={11} />
+                                                        </div>
+                                                        <span className="text-[10px] text-slate-400 font-semibold">{o.client}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div className="pt-4">
+                                            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 no-print">
+                                                Kody Kreskowe Towarów Magazynowych
+                                            </h4>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                                                {products.map(p => (
+                                                    <div key={p.id} className="bg-white p-4 rounded-xl border border-slate-300 text-center flex flex-col justify-between items-center shadow-sm">
+                                                        <span className="text-[10px] font-bold text-indigo-600 uppercase">{p.category}</span>
+                                                        <h5 className="font-bold text-slate-900 text-xs mt-1 leading-tight">{p.name}</h5>
+                                                        <div className="my-2">
+                                                            <BarcodeVisual value={p.ean} width={1.6} height={40} fontSize={10} />
+                                                        </div>
+                                                        <span className="text-[10px] text-slate-400">
+                                                            Cena: {p.price ? p.price.toFixed(2) + ' zł' : '-'} | Stan: {p.stock} {p.unit}
+                                                        </span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Zakładka 4: Ustawienia */}
+                                {bossTab === 'settings' && (
+                                    <div className="max-w-xl mx-auto space-y-6">
+                                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-5">
+                                            <div className="flex items-center space-x-3">
+                                                <div className="w-10 h-10 bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center text-lg">
+                                                    <i className="fa-solid fa-shield-halved"></i>
+                                                </div>
+                                                <div>
+                                                    <h3 className="font-bold text-slate-900 text-base">Zarządzanie Kodami PIN</h3>
+                                                    <p className="text-xs text-slate-500">Ustaw osobny PIN dla dostępu do aplikacji i osobny dla Panelu Szefa.</p>
+                                                </div>
+                                            </div>
+
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                                                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-col justify-between">
+                                                    <div>
+                                                        <span className="text-[10px] font-bold text-indigo-600 uppercase block">1. PIN Dostępu do Strony</span>
+                                                        <p className="text-xs text-slate-500 mt-1">Wprowadzany przy otwarciu serwisu przez użytkowników.</p>
+                                                    </div>
+                                                    <button
+                                                        onClick={() => {
+                                                            setPinTypeToEdit('app');
+                                                            setPinForm({ oldPin: '', newPin: '', confirmPin: '' });
+                                                            setChangePinError('');
+                                                            setShowChangePinModal(true);
+                                                        }}
+                                                        className="mt-4 w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-all shadow-sm"
+                                                    >
+                                                        Zmień PIN Strony
+                                                    </button>
+                                                </div>
+
+                                                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-col justify-between">
+                                                    <div>
+                                                        <span className="text-[10px] font-bold text-amber-600 uppercase block">2. PIN Panelu Szefa</span>
+                                                        <p className="text-xs text-slate-500 mt-1">Autoryzuje wejście do edycji magazynu i bazy zleceń.</p>
+                                                    </div>
+                                                    <button
+                                                        onClick={() => {
+                                                            setPinTypeToEdit('boss');
+                                                            setPinForm({ oldPin: '', newPin: '', confirmPin: '' });
+                                                            setChangePinError('');
+                                                            setShowChangePinModal(true);
+                                                        }}
+                                                        className="mt-4 w-full py-2.5 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-xl transition-all shadow-sm"
+                                                    >
+                                                        Zmień PIN Szefa
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-rose-200 space-y-4">
+                                            <div className="flex items-center space-x-3">
+                                                <div className="w-10 h-10 bg-rose-100 text-rose-600 rounded-xl flex items-center justify-center text-lg">
+                                                    <i className="fa-solid fa-triangle-exclamation"></i>
+                                                </div>
+                                                <div>
+                                                    <h3 className="font-bold text-slate-900 text-base">Reset Fabryczny Bazy</h3>
+                                                    <p className="text-xs text-slate-500">Przetestuj lub przywróć fabryczną bazę towarów i zresetuj PINy.</p>
+                                                </div>
+                                            </div>
+
+                                            <button
+                                                onClick={() => setResetDataConfirm(true)}
+                                                className="w-full py-3 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-300 font-bold text-xs rounded-xl transition-all"
+                                            >
+                                                Przywróć Ustawienia Domyślne
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                            </div>
+                        )}
+
+                    </main>
+
+                    <footer className="bg-white border-t border-slate-200 mt-auto py-4 text-center text-xs text-slate-400 no-print">
+                        <p>© 2026 MagazynPro • Tryb: <span className="font-semibold text-slate-600">{role === 'boss' ? 'Szef' : 'Pracownik'}</span></p>
+                    </footer>
+
+                    {/* MODALE */}
+                    {inspectingOrder && (
+                        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
+                            <div className="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-100 max-h-[90vh] flex flex-col">
+                                
+                                <div className="flex items-start justify-between border-b border-slate-200 pb-4">
+                                    <div className="flex items-center space-x-3">
+                                        <div className="w-12 h-12 bg-indigo-100 text-indigo-700 rounded-2xl flex items-center justify-center text-xl font-bold">
+                                            <i className="fa-solid fa-file-invoice"></i>
+                                        </div>
+                                        <div>
+                                            <div className="flex items-center space-x-2">
+                                                <span className="font-mono font-black text-indigo-600 text-xs bg-indigo-50 px-2.5 py-0.5 rounded border border-indigo-100">
+                                                    {inspectingOrder.id}
+                                                </span>
+                                                <span className="text-xs text-slate-400">| Klient: {inspectingOrder.client || 'Brak'}</span>
+                                            </div>
+                                            <h3 className="font-extrabold text-slate-900 text-xl leading-tight mt-0.5">{inspectingOrder.name}</h3>
+                                        </div>
+                                    </div>
+
+                                    <button
+                                        onClick={() => setInspectingOrder(null)}
+                                        className="text-slate-400 hover:text-slate-600 p-2 rounded-full hover:bg-slate-100"
+                                    >
+                                        <i className="fa-solid fa-xmark text-xl"></i>
+                                    </button>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-3 my-4">
+                                    <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200 text-center">
+                                        <span className="text-[10px] text-slate-400 font-bold uppercase block">Zeskanowano Sztuk</span>
+                                        <span className="text-xl font-black text-slate-900">
+                                            {assignments.filter(a => a.orderCode === inspectingOrder.id).reduce((acc, c) => acc + c.quantity, 0)}
+                                        </span>
+                                    </div>
+                                    <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200 text-center">
+                                        <span className="text-[10px] text-slate-400 font-bold uppercase block">Unikalne Pozycje SKU</span>
+                                        <span className="text-xl font-black text-indigo-600">
+                                            {new Set(assignments.filter(a => a.orderCode === inspectingOrder.id).map(a => a.ean)).size}
+                                        </span>
+                                    </div>
+                                    <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200 text-center">
+                                        <span className="text-[10px] text-slate-400 font-bold uppercase block">Łączna Wartość</span>
+                                        <span className="text-xl font-black text-emerald-700">
+                                            {assignments.filter(a => a.orderCode === inspectingOrder.id).reduce((acc, c) => acc + ((c.price || 0) * c.quantity), 0).toFixed(2)} zł
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center justify-between gap-3 mb-3">
+                                    <div className="relative flex-grow max-w-sm">
+                                        <i className="fa-solid fa-magnifying-glass absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 text-xs"></i>
+                                        <input
+                                            type="text"
+                                            value={inspectSearch}
+                                            onChange={(e) => setInspectSearch(e.target.value)}
+                                            placeholder="Szukaj produktu w tym zleceniu..."
+                                            className="w-full pl-9 pr-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs"
+                                        />
+                                    </div>
+
+                                    <div className="flex space-x-2">
+                                        <button
+                                            onClick={() => exportOrderCSV(inspectingOrder.id)}
+                                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg flex items-center space-x-1"
+                                        >
+                                            <i className="fa-solid fa-file-csv"></i>
+                                            <span>Pobierz CSV Zlecenia</span>
+                                        </button>
+                                        <button
+                                            onClick={() => window.print()}
+                                            className="bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs px-3 py-1.5 rounded-lg flex items-center space-x-1"
+                                        >
+                                            <i className="fa-solid fa-print"></i>
+                                            <span>Drukuj Podsumowanie</span>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="flex-grow overflow-y-auto border border-slate-200 rounded-2xl">
+                                    <table className="w-full text-left text-xs text-slate-600">
+                                        <thead className="bg-slate-50 text-slate-700 font-bold uppercase tracking-wider text-[10px] sticky top-0 border-b border-slate-200">
+                                            <tr>
+                                                <th className="py-3 px-4">Kod EAN</th>
+                                                <th className="py-3 px-4">Nazwa Zeskanowanego Towaru</th>
+                                                <th className="py-3 px-4 text-center">Ilość</th>
+                                                <th className="py-3 px-4 text-right">Cena Jedn.</th>
+                                                <th className="py-3 px-4 text-right">Wartość</th>
+                                                <th className="py-3 px-4">Data i Czas Skanu</th>
+                                                <th className="py-3 px-4 text-right">Akcja</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100">
+                                            {assignments
+                                                .filter(a => a.orderCode === inspectingOrder.id)
+                                                .filter(a => a.productName.toLowerCase().includes(inspectSearch.toLowerCase()) || a.ean.includes(inspectSearch))
+                                                .length > 0 ? (
+                                                    assignments
+                                                        .filter(a => a.orderCode === inspectingOrder.id)
+                                                        .filter(a => a.productName.toLowerCase().includes(inspectSearch.toLowerCase()) || a.ean.includes(inspectSearch))
+                                                        .map(a => (
+                                                            <tr key={a.id} className="hover:bg-slate-50">
+                                                                <td className="py-3 px-4 font-mono font-bold text-slate-800">{a.ean}</td>
+                                                                <td className="py-3 px-4 font-bold text-slate-900">{a.productName}</td>
+                                                                <td className="py-3 px-4 text-center font-black text-indigo-600">
+                                                                    {a.quantity} {a.unit}
+                                                                </td>
+                                                                <td className="py-3 px-4 text-right font-medium">{a.price ? a.price.toFixed(2) + ' zł' : '-'}</td>
+                                                                <td className="py-3 px-4 text-right font-bold text-emerald-700">
+                                                                    {a.price ? (a.price * a.quantity).toFixed(2) + ' zł' : '-'}
+                                                                </td>
+                                                                <td className="py-3 px-4 text-slate-400">{a.timestamp}</td>
+                                                                <td className="py-3 px-4 text-right">
+                                                                    <button
+                                                                        onClick={() => setDeleteScanConfirmTarget(a)}
+                                                                        className="text-rose-600 hover:text-rose-800 font-bold hover:underline"
+                                                                    >
+                                                                        Usuń ze zlecenia
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+                                                        ))
+                                                ) : (
+                                                    <tr>
+                                                        <td colSpan="7" className="py-12 text-center text-slate-400">
+                                                            <i className="fa-solid fa-box-open text-3xl mb-2 block"></i>
+                                                            Brak zeskanowanych pozycji w tym zleceniu.
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <div className="pt-4 border-t border-slate-200 text-right">
+                                    <button
+                                        onClick={() => setInspectingOrder(null)}
+                                        className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl"
+                                    >
+                                        Zamknij Widok Zlecenia
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {showPinModal && (
+                        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+                            <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 space-y-4">
+                                <div className="text-center">
+                                    <div className="w-14 h-14 bg-amber-100 text-amber-600 rounded-2xl flex items-center justify-center mx-auto mb-2 text-2xl">
+                                        <i className="fa-solid fa-lock"></i>
+                                    </div>
+                                    <h3 className="font-bold text-slate-900 text-lg">Dostęp do Panelu Szefa</h3>
+                                    <p className="text-xs text-slate-500">Wpisz dedykowany PIN kierownika.</p>
+                                </div>
+
+                                <form onSubmit={handlePinSubmit} className="space-y-4">
+                                    <input
+                                        type="password"
+                                        maxLength="10"
+                                        value={pinInput}
+                                        onChange={(e) => setPinInput(e.target.value)}
+                                        placeholder="Wpisz PIN Szefa"
+                                        autoFocus
+                                        className="w-full text-center text-2xl tracking-widest font-mono font-bold py-3 bg-slate-50 border-2 border-slate-300 rounded-xl focus:border-amber-500 focus:outline-none"
+                                    />
+                                    {pinError && <p className="text-xs text-rose-600 font-bold text-center">{pinError}</p>}
+
+                                    <div className="flex space-x-2 pt-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowPinModal(false)}
+                                            className="w-1/2 py-2.5 rounded-xl border border-slate-300 text-xs font-semibold text-slate-600"
+                                        >
+                                            Anuluj
+                                        </button>
+                                        <button
+                                            type="submit"
+                                            className="w-1/2 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs shadow-md"
+                                        >
+                                            Zaloguj się
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {showChangePinModal && (
+                        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+                            <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 space-y-4">
+                                <h3 className="font-bold text-slate-900 text-base border-b pb-2">
+                                    Zmiana PIN-u: {pinTypeToEdit === 'app' ? 'Dostęp do Strony' : 'Panel Szefa'}
+                                </h3>
+
+                                <form onSubmit={handleChangePinSubmit} className="space-y-3">
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Obecny PIN</label>
+                                        <input
+                                            type="password"
+                                            required
+                                            value={pinForm.oldPin}
+                                            onChange={(e) => setPinForm({ ...pinForm, oldPin: e.target.value })}
+                                            className="w-full text-center font-mono font-bold py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Nowy PIN (min. 4 cyfry)</label>
+                                        <input
+                                            type="password"
+                                            required
+                                            value={pinForm.newPin}
+                                            onChange={(e) => setPinForm({ ...pinForm, newPin: e.target.value })}
+                                            className="w-full text-center font-mono font-bold py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Powtórz Nowy PIN</label>
+                                        <input
+                                            type="password"
+                                            required
+                                            value={pinForm.confirmPin}
+                                            onChange={(e) => setPinForm({ ...pinForm, confirmPin: e.target.value })}
+                                            className="w-full text-center font-mono font-bold py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm"
+                                        />
+                                    </div>
+
+                                    {changePinError && <p className="text-xs text-rose-600 font-bold">{changePinError}</p>}
+
+                                    <div className="flex space-x-2 pt-2 border-t">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowChangePinModal(false)}
+                                            className="w-1/2 py-2 rounded-xl border text-xs font-bold text-slate-600"
+                                        >
+                                            Anuluj
+                                        </button>
+                                        <button
+                                            type="submit"
+                                            className={`w-1/2 py-2 rounded-xl text-white font-bold text-xs ${
+                                                pinTypeToEdit === 'app' ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-amber-600 hover:bg-amber-500'
+                                            }`}
+                                        >
+                                            Zapisz Nowy PIN
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {showProductModal && (
+                        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+                            <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 max-h-[90vh] overflow-y-auto">
+                                <div className="flex items-center justify-between border-b pb-3 mb-4">
+                                    <h3 className="font-bold text-slate-900 text-base">
+                                        {editingProduct ? 'Edytuj Produkt' : 'Dodaj Produkt do Magazynu'}
+                                    </h3>
+                                    <button onClick={() => setShowProductModal(false)} className="text-slate-400 hover:text-slate-600">
+                                        <i className="fa-solid fa-xmark text-lg"></i>
+                                    </button>
+                                </div>
+
+                                <form onSubmit={handleSaveProduct} className="space-y-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Nazwa Produktu</label>
+                                        <input
+                                            type="text"
+                                            required
+                                            value={formData.name}
+                                            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                                            className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-semibold"
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Kod EAN / SKU</label>
+                                            <input
+                                                type="text"
+                                                required
+                                                value={formData.ean}
+                                                onChange={(e) => setFormData({ ...formData, ean: e.target.value })}
+                                                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono font-bold"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Kategoria</label>
+                                            <input
+                                                type="text"
+                                                required
+                                                value={formData.category}
+                                                onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                                                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-semibold"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-4 gap-2">
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Cena (zł)</label>
+                                            <input
+                                                type="number"
+                                                step="0.01"
+                                                min="0"
+                                                value={formData.price}
+                                                onChange={(e) => setFormData({ ...formData, price: parseFloat(e.target.value) || 0 })}
+                                                className="w-full px-2 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-center"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Stan</label>
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                value={formData.stock}
+                                                onChange={(e) => setFormData({ ...formData, stock: parseInt(e.target.value) || 0 })}
+                                                className="w-full px-2 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-center"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Min. Stan</label>
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                value={formData.minStock}
+                                                onChange={(e) => setFormData({ ...formData, minStock: parseInt(e.target.value) || 0 })}
+                                                className="w-full px-2 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-center text-rose-600"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Jedn.</label>
+                                            <select
+                                                value={formData.unit}
+                                                onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
+                                                className="w-full px-1 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold"
+                                            >
+                                                <option value="szt">szt</option>
+                                                <option value="opk">opk</option>
+                                                <option value="kg">kg</option>
+                                                <option value="m">m</option>
+                                                <option value="rolka">rolka</option>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    {formData.ean && (
+                                        <div className="bg-slate-50 p-2 rounded-xl text-center border border-slate-200">
+                                            <BarcodeVisual value={formData.ean} width={1.8} height={38} fontSize={10} />
+                                        </div>
+                                    )}
+
+                                    <div className="flex space-x-2 pt-3 border-t">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowProductModal(false)}
+                                            className="w-1/2 py-2.5 rounded-xl border border-slate-300 text-xs font-semibold text-slate-600"
+                                        >
+                                            Anuluj
+                                        </button>
+                                        <button
+                                            type="submit"
+                                            className="w-1/2 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs"
+                                        >
+                                            Zapisz Produkt
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {showNewOrderModal && (
+                        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+                            <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-100">
+                                <h3 className="font-bold text-slate-900 text-base border-b pb-2 mb-3">Nowe Zlecenie</h3>
+                                <form onSubmit={handleSaveNewOrder} className="space-y-3">
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Kod Zlecenia</label>
+                                        <input
+                                            type="text"
+                                            required
+                                            value={newOrderData.id}
+                                            onChange={(e) => setNewOrderData({ ...newOrderData, id: e.target.value })}
+                                            placeholder="np. ZLEC-2026-004"
+                                            className="w-full px-3 py-2 bg-slate-50 border rounded-lg text-xs font-mono font-bold uppercase"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Nazwa Zlecenia</label>
+                                        <input
+                                            type="text"
+                                            required
+                                            value={newOrderData.name}
+                                            onChange={(e) => setNewOrderData({ ...newOrderData, name: e.target.value })}
+                                            placeholder="np. Remont Magazynu A"
+                                            className="w-full px-3 py-2 bg-slate-50 border rounded-lg text-xs font-semibold"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-700 uppercase mb-1">Klient / Inwestor</label>
+                                        <input
+                                            type="text"
+                                            value={newOrderData.client}
+                                            onChange={(e) => setNewOrderData({ ...newOrderData, client: e.target.value })}
+                                            placeholder="np. Firma XYZ"
+                                            className="w-full px-3 py-2 bg-slate-50 border rounded-lg text-xs font-semibold"
+                                        />
+                                    </div>
+
+                                    <div className="flex space-x-2 pt-3 border-t">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowNewOrderModal(false)}
+                                            className="w-1/2 py-2 rounded-xl border text-xs font-bold text-slate-600"
+                                        >
+                                            Anuluj
+                                        </button>
+                                        <button
+                                            type="submit"
+                                            className="w-1/2 py-2 rounded-xl bg-indigo-600 text-white font-bold text-xs"
+                                        >
+                                            Utwórz Zlecenie
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {deleteConfirmTarget && (
+                        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+                            <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 text-center space-y-4">
+                                <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto text-xl">
+                                    <i className="fa-solid fa-trash"></i>
+                                </div>
+                                <h3 className="font-bold text-slate-900 text-base">Potwierdzenie Usunięcia</h3>
+                                <p className="text-xs text-slate-600">
+                                    Czy na pewno chcesz usunąć produkt <span className="font-bold">{deleteConfirmTarget.name}</span> z bazy magazynowej?
+                                </p>
+                                <div className="flex space-x-2 pt-2">
+                                    <button
+                                        onClick={() => setDeleteConfirmTarget(null)}
+                                        className="w-1/2 py-2.5 rounded-xl border border-slate-300 text-xs font-bold text-slate-600"
+                                    >
+                                        Anuluj
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            const targetId = deleteConfirmTarget.id;
+                                            setProducts(prev => prev.filter(p => p.id !== targetId));
+                                            
+                                            const fb = window.fb;
+                                            if (fb && user) {
+                                                fb.deleteDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'products', targetId));
+                                            }
+
+                                            showNotification(`Usunięto produkt: ${deleteConfirmTarget.name}`, 'success');
+                                            setDeleteConfirmTarget(null);
+                                        }}
+                                        className="w-1/2 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md"
+                                    >
+                                        Tak, Usuń
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {deleteScanConfirmTarget && (
+                        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+                            <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 text-center space-y-4">
+                                <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto text-xl">
+                                    <i className="fa-solid fa-rotate-left"></i>
+                                </div>
+                                <h3 className="font-bold text-slate-900 text-base">Potwierdzenie Usunięcia Skanu</h3>
+                                <p className="text-xs text-slate-600">
+                                    Czy na pewno chcesz usunąć skan pozycji <span className="font-bold">{deleteScanConfirmTarget.productName}</span> ({deleteScanConfirmTarget.quantity} {deleteScanConfirmTarget.unit}) ze zlecenia <span className="font-bold">{deleteScanConfirmTarget.orderCode}</span>?
+                                </p>
+                                <p className="text-[11px] text-emerald-600 font-semibold bg-emerald-50 py-1.5 px-3 rounded-lg border border-emerald-100">
+                                    <i className="fa-solid fa-boxes-stacked mr-1"></i> Ilość towaru zostanie automatycznie zwrócona na stan magazynowy.
+                                </p>
+                                <div className="flex space-x-2 pt-2">
+                                    <button
+                                        onClick={() => setDeleteScanConfirmTarget(null)}
+                                        className="w-1/2 py-2.5 rounded-xl border border-slate-300 text-xs font-bold text-slate-600"
+                                    >
+                                        Anuluj
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            handleUndoAssignmentBoss(deleteScanConfirmTarget.id);
+                                            setDeleteScanConfirmTarget(null);
+                                        }}
+                                        className="w-1/2 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md"
+                                    >
+                                        Tak, Cofnij Skan
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {resetDataConfirm && (
+                        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+                            <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 text-center space-y-4">
+                                <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto text-xl">
+                                    <i className="fa-solid fa-arrows-rotate"></i>
+                                </div>
+                                <h3 className="font-bold text-slate-900 text-base">Reset Fabryczny</h3>
+                                <p className="text-xs text-slate-600">
+                                    Wszystkie dodane produkty, zlecenia oraz skany zostaną zastąpione danymi domyślnymi, a PINy zostaną zresetowane.
+                                </p>
+                                <div className="flex space-x-2 pt-2">
+                                    <button
+                                        onClick={() => setResetDataConfirm(false)}
+                                        className="w-1/2 py-2.5 rounded-xl border border-slate-300 text-xs font-bold text-slate-600"
+                                    >
+                                        Anuluj
+                                    </button>
+                                    <button
+                                        onClick={handleExecuteResetData}
+                                        className="w-1/2 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md"
+                                    >
+                                        Resetuj Dane
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
