@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MagazynPro - System Skanowania i Zarządzania Magazynem</title>
+    
+    <!-- Favicon z czarną kostką PRO z przesłanego obrazka -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230f172a'/><path d='M50 15 L85 32 L50 50 L15 32 Z' fill='%23334155' stroke='%23ffffff' stroke-width='2'/><path d='M15 32 L50 50 L50 85 L15 68 Z' fill='%231e293b' stroke='%23ffffff' stroke-width='2'/><path d='M50 50 L85 32 L85 68 L50 85 Z' fill='%230f172a' stroke='%23ffffff' stroke-width='2'/><text x='24' y='66' font-family='sans-serif' font-size='13' font-weight='900' fill='white'>PRO</text></svg>">
+    
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- FontAwesome Icons -->
@@ -18,31 +22,30 @@
     <!-- HTML5 QR / Barcode Reader -->
     <script src="https://unpkg.com/html5-qrcode"></script>
 
-    <!-- Cloud Real-time Synchronization Module -->
+    <!-- Cloud Real-time Synchronization Module (Firebase Direct Connection) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // Konfiguracja Twojej Bazy Google Firebase
         const firebaseConfig = {
-  apiKey: "AIzaSyAUYaTRducWAaZUxLYoLG1FhbRPMTOJCi4",
-  authDomain: "magazyn-pro-4e1e1.firebaseapp.com",
-  projectId: "magazyn-pro-4e1e1",
-  storageBucket: "magazyn-pro-4e1e1.firebasestorage.app",
-  messagingSenderId: "436830797060",
-  appId: "1:436830797060:web:7e41d9d9b45412a507a451",
-  measurementId: "G-QLK9JEPGQ0"
-};
+            apiKey: "AIzaSyAUYaTRducWAaZUxLYoLG1FhbRPMTOJCi4",
+            authDomain: "magazyn-pro-4e1e1.firebaseapp.com",
+            projectId: "magazyn-pro-4e1e1",
+            storageBucket: "magazyn-pro-4e1e1.firebasestorage.app",
+            messagingSenderId: "436830797060",
+            appId: "1:436830797060:web:7e41d9d9b45412a507a451",
+            measurementId: "G-QLK9JEPGQ0"
+        };
+
         const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
         const db = getFirestore(app);
 
+        // Bezpośrednie przekazanie Firestore bez wymagania modułu Auth
         window.fb = {
-            auth, db,
-            signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            db,
             doc, setDoc, deleteDoc, onSnapshot, collection,
-            appId: typeof __app_id !== 'undefined' ? __app_id : 'magazyn-pro-default',
-            initialToken: typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null
+            appId: 'magazyn-pro-prod'
         };
     </script>
 
@@ -185,7 +188,6 @@
             const [pinError, setPinError] = useState('');
 
             // Stan synchronizacji z chmurą
-            const [user, setUser] = useState(null);
             const [cloudSynced, setCloudSynced] = useState(false);
 
             // Główne dane aplikacji
@@ -250,6 +252,7 @@
 
             const [deleteConfirmTarget, setDeleteConfirmTarget] = useState(null);
             const [deleteScanConfirmTarget, setDeleteScanConfirmTarget] = useState(null);
+            const [deleteOrderConfirmTarget, setDeleteOrderConfirmTarget] = useState(null);
             const [resetDataConfirm, setResetDataConfirm] = useState(false);
 
             // Powiadomienia typu toast
@@ -313,36 +316,10 @@
                 localStorage.setItem('magazyn_boss_pin', bossPin);
             }, [bossPin]);
 
-            // Autoryzacja chmury
+            // Synchronizacja danych w chmurze w czasie rzeczywistym
             useEffect(() => {
                 const fb = window.fb;
-                if (!fb) return;
-
-                const initAuth = async () => {
-                    try {
-                        if (fb.initialToken) {
-                            await fb.signInWithCustomToken(fb.auth, fb.initialToken);
-                        } else {
-                            await fb.signInAnonymously(fb.auth);
-                        }
-                    } catch (err) {
-                        console.warn("Cloud Auth Notice:", err);
-                    }
-                };
-
-                initAuth();
-
-                const unsubscribeAuth = fb.onAuthStateChanged(fb.auth, (currentUser) => {
-                    setUser(currentUser);
-                });
-
-                return () => unsubscribeAuth();
-            }, []);
-
-            // Nasłuchiwanie zmian w czasie rzeczywistym
-            useEffect(() => {
-                const fb = window.fb;
-                if (!fb || !user) return;
+                if (!fb || !fb.db) return;
 
                 const appId = fb.appId;
                 const basePath = ['artifacts', appId, 'public', 'data'];
@@ -392,7 +369,7 @@
                 } catch (e) {
                     console.warn("Firebase live listener notice:", e);
                 }
-            }, [user]);
+            }, []);
 
             // Automatyczny powrót do wyboru zlecenia po 60 sekundach bezczynności
             useEffect(() => {
@@ -531,7 +508,7 @@
                 setAssignments(prev => [newAssignment, ...prev]);
 
                 const fb = window.fb;
-                if (fb && user) {
+                if (fb && fb.db) {
                     const basePath = ['artifacts', fb.appId, 'public', 'data'];
                     fb.setDoc(fb.doc(fb.db, ...basePath, 'products', matchedProduct.id), {
                         ...matchedProduct,
@@ -580,7 +557,7 @@
                 setAssignments(prev => prev.filter(a => a.id !== assignmentId));
 
                 const fb = window.fb;
-                if (fb && user) {
+                if (fb && fb.db) {
                     const basePath = ['artifacts', fb.appId, 'public', 'data'];
                     if (targetProduct) {
                         fb.setDoc(fb.doc(fb.db, ...basePath, 'products', targetProduct.id), {
@@ -603,7 +580,7 @@
                 setProducts(prev => prev.map(p => p.id === productId ? { ...p, stock: newStock } : p));
 
                 const fb = window.fb;
-                if (fb && user) {
+                if (fb && fb.db) {
                     fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'products', productId), {
                         ...target,
                         stock: newStock
@@ -612,7 +589,7 @@
                 playAudioBeep('click');
             };
 
-            // Zmiana statusu zlecenia (Aktywne / Zakończone)
+            // Zmiana statusu zlecenia
             const handleToggleOrderStatus = (orderId) => {
                 const target = orders.find(o => o.id === orderId);
                 if (!target) return;
@@ -622,7 +599,7 @@
                 setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
 
                 const fb = window.fb;
-                if (fb && user) {
+                if (fb && fb.db) {
                     fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders', orderId), {
                         ...target,
                         status: newStatus
@@ -630,6 +607,26 @@
                 }
 
                 showNotification(`Zmieniono status zlecenia ${orderId} na: ${newStatus === 'ACTIVE' ? 'Aktywne' : 'Zakończone'}`, 'success');
+            };
+
+            // Usuwanie zlecenia z bazy i chmury
+            const handleDeleteOrderBoss = (orderId) => {
+                const targetOrder = orders.find(o => o.id === orderId);
+                if (!targetOrder) return;
+
+                setOrders(prev => prev.filter(o => o.id !== orderId));
+                setAssignments(prev => prev.filter(a => a.orderCode !== orderId));
+
+                const fb = window.fb;
+                if (fb && fb.db) {
+                    const basePath = ['artifacts', fb.appId, 'public', 'data'];
+                    fb.deleteDoc(fb.doc(fb.db, ...basePath, 'orders', orderId));
+                }
+
+                showNotification(`Usunięto zlecenie: ${orderId} (${targetOrder.name})`, 'success');
+                if (inspectingOrder && inspectingOrder.id === orderId) {
+                    setInspectingOrder(null);
+                }
             };
 
             // Zapis nowego lub edytowanego produktu
@@ -656,7 +653,7 @@
                 }
 
                 const fb = window.fb;
-                if (fb && user) {
+                if (fb && fb.db) {
                     fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'products', targetId), prodObj);
                 }
 
@@ -696,7 +693,7 @@
                 setOrders(prev => [...prev, newOrderObj]);
 
                 const fb = window.fb;
-                if (fb && user) {
+                if (fb && fb.db) {
                     fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders', formattedId), newOrderObj);
                 }
 
@@ -730,7 +727,7 @@
                 }
 
                 const fb = window.fb;
-                if (fb && user) {
+                if (fb && fb.db) {
                     fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'settings', 'config'), {
                         appPin: pinTypeToEdit === 'app' ? pinForm.newPin : appPin,
                         bossPin: pinTypeToEdit === 'boss' ? pinForm.newPin : bossPin
@@ -904,8 +901,15 @@
                 return (
                     <div className="min-h-screen flex items-center justify-center bg-slate-950 p-4">
                         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl space-y-6 border border-slate-800 text-center">
-                            <div className="w-20 h-20 bg-indigo-600 text-white rounded-3xl flex items-center justify-center mx-auto text-3xl shadow-lg shadow-indigo-200">
-                                <i className="fa-solid fa-boxes-stacked"></i>
+                            <div className="w-20 h-20 bg-slate-900 text-white rounded-3xl flex items-center justify-center mx-auto shadow-xl border border-slate-700 relative overflow-hidden group">
+                                <svg viewBox="0 0 100 100" className="w-14 h-14">
+                                    <polygon points="50,15 85,32 50,50 15,32" fill="#334155" stroke="#ffffff" strokeWidth="2"/>
+                                    <polygon points="15,32 50,50 50,85 15,68" fill="#1e293b" stroke="#ffffff" strokeWidth="2"/>
+                                    <polygon points="50,50 85,32 85,68 50,85" fill="#0f172a" stroke="#ffffff" strokeWidth="2"/>
+                                    <polyline points="50,15 50,50 15,32" fill="none" stroke="#ffffff" strokeWidth="1.5" opacity="0.6"/>
+                                    <polyline points="50,50 85,32" fill="none" stroke="#ffffff" strokeWidth="1.5" opacity="0.6"/>
+                                    <text x="24" y="66" fontStyle="normal" fontWeight="900" fontSize="13" fill="#ffffff" fontFamily="Inter, sans-serif" letterSpacing="0.5">PRO</text>
+                                </svg>
                             </div>
                             <div>
                                 <h2 className="text-2xl font-black text-slate-900">MagazynPro</h2>
@@ -955,8 +959,13 @@
                     <header className="bg-slate-900 text-white shadow-md sticky top-0 z-40 no-print">
                         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
                             <div className="flex items-center space-x-3">
-                                <div className="bg-indigo-600 p-2 rounded-xl flex items-center justify-center text-white text-lg">
-                                    <i className="fa-solid fa-boxes-stacked"></i>
+                                <div className="w-10 h-10 bg-slate-950 rounded-xl flex items-center justify-center text-white border border-slate-700 shadow-inner">
+                                    <svg viewBox="0 0 100 100" className="w-7 h-7">
+                                        <polygon points="50,15 85,32 50,50 15,32" fill="#334155" stroke="#ffffff" strokeWidth="2"/>
+                                        <polygon points="15,32 50,50 50,85 15,68" fill="#1e293b" stroke="#ffffff" strokeWidth="2"/>
+                                        <polygon points="50,50 85,32 85,68 50,85" fill="#0f172a" stroke="#ffffff" strokeWidth="2"/>
+                                        <text x="24" y="66" fontWeight="900" fontSize="13" fill="#ffffff" fontFamily="Inter, sans-serif">PRO</text>
+                                    </svg>
                                 </div>
                                 <div>
                                     <div className="flex items-center space-x-2">
@@ -1769,6 +1778,13 @@
                                                                         <i className="fa-solid fa-eye"></i>
                                                                         <span>Szczegóły</span>
                                                                     </button>
+                                                                    <button
+                                                                        onClick={() => setDeleteOrderConfirmTarget(ord)}
+                                                                        className="bg-rose-100 hover:bg-rose-200 text-rose-700 p-2 rounded-xl text-xs"
+                                                                        title="Usuń to zlecenie"
+                                                                    >
+                                                                        <i className="fa-solid fa-trash"></i>
+                                                                    </button>
                                                                 </div>
                                                             </div>
                                                         </div>
@@ -2426,6 +2442,42 @@
                         </div>
                     )}
 
+                    {/* MODAL CONFIRMATION: Delete Order */}
+                    {deleteOrderConfirmTarget && (
+                        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+                            <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 text-center space-y-4">
+                                <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto text-xl">
+                                    <i className="fa-solid fa-trash"></i>
+                                </div>
+                                <h3 className="font-bold text-slate-900 text-base">Potwierdzenie Usunięcia Zlecenia</h3>
+                                <p className="text-xs text-slate-600">
+                                    Czy na pewno chcesz usunąć zlecenie <span className="font-bold">{deleteOrderConfirmTarget.id}</span> ({deleteOrderConfirmTarget.name})?
+                                </p>
+                                <p className="text-[11px] text-slate-500 bg-slate-50 py-2 px-3 rounded-lg border border-slate-200">
+                                    Zlecenie zostanie całkowicie usunięte z bazy danych wraz z podglądem jego wydań.
+                                </p>
+                                <div className="flex space-x-2 pt-2">
+                                    <button
+                                        onClick={() => setDeleteOrderConfirmTarget(null)}
+                                        className="w-1/2 py-2.5 rounded-xl border border-slate-300 text-xs font-bold text-slate-600"
+                                    >
+                                        Anuluj
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            handleDeleteOrderBoss(deleteOrderConfirmTarget.id);
+                                            setDeleteOrderConfirmTarget(null);
+                                        }}
+                                        className="w-1/2 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md"
+                                    >
+                                        Tak, Usuń Zlecenie
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL CONFIRMATION: Delete Product */}
                     {deleteConfirmTarget && (
                         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
                             <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 text-center space-y-4">
@@ -2449,7 +2501,7 @@
                                             setProducts(prev => prev.filter(p => p.id !== targetId));
                                             
                                             const fb = window.fb;
-                                            if (fb && user) {
+                                            if (fb && fb.db) {
                                                 fb.deleteDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'products', targetId));
                                             }
 
@@ -2465,6 +2517,7 @@
                         </div>
                     )}
 
+                    {/* MODAL CONFIRMATION: Undo Scan */}
                     {deleteScanConfirmTarget && (
                         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
                             <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 text-center space-y-4">
@@ -2499,6 +2552,7 @@
                         </div>
                     )}
 
+                    {/* MODAL CONFIRMATION: Factory Reset */}
                     {resetDataConfirm && (
                         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
                             <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 text-center space-y-4">
@@ -2507,7 +2561,7 @@
                                 </div>
                                 <h3 className="font-bold text-slate-900 text-base">Reset Fabryczny</h3>
                                 <p className="text-xs text-slate-600">
-                                    Wszystkie dodane produkty, zlecenia oraz skany zostaną zastąpione danymi domyślnymi, a PINy zostaną zresetowane.
+                                    Wszystkie dodane produkty, zlecenia oraz skany zostaną zastąpione danymi domyślnymi.
                                 </p>
                                 <div className="flex space-x-2 pt-2">
                                     <button
