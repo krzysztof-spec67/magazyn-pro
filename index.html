@@ -24,12 +24,15 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            apiKey: "demo-key",
-            authDomain: "demo.firebaseapp.com",
-            projectId: "demo-project"
-        };
-
+        const firebaseConfig = {
+  apiKey: "AIzaSyAUYaTRducWAaZUxLYoLG1FhbRPMTOJCi4",
+  authDomain: "magazyn-pro-4e1e1.firebaseapp.com",
+  projectId: "magazyn-pro-4e1e1",
+  storageBucket: "magazyn-pro-4e1e1.firebasestorage.app",
+  messagingSenderId: "436830797060",
+  appId: "1:436830797060:web:7e41d9d9b45412a507a451",
+  measurementId: "G-QLK9JEPGQ0"
+};
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
